@@ -20,6 +20,7 @@ const groups: Group[] = [
       { id: 'tree',        label: 'Tree Symbol',       comp: A('./tabs/TabTreeSymbol.vue') },
       { id: 'wind',        label: 'Wind Sway',         comp: A('./tabs/TabWindSway.vue') },
       { id: 'kuwahara',    label: 'Kuwahara Filter',   comp: A('./tabs/TabKuwahara.vue') },
+      { id: 'footer-msdf', label: 'Footer MSDF',       comp: A('./tabs/TabFooterMsdf.vue') },
     ],
   },
   {
