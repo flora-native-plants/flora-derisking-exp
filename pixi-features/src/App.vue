@@ -21,6 +21,7 @@ const groups: Group[] = [
       { id: 'wind',        label: 'Wind Sway',         comp: A('./tabs/TabWindSway.vue') },
       { id: 'kuwahara',    label: 'Kuwahara Filter',   comp: A('./tabs/TabKuwahara.vue') },
       { id: 'footer-msdf', label: 'Footer MSDF',       comp: A('./tabs/TabFooterMsdf.vue') },
+      { id: 'svg-render',  label: 'SVG Render Test',   comp: A('./tabs/TabSvgRender.vue') },
     ],
   },
   {

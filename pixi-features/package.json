@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "type-check": "vue-tsc --noEmit"
+    "type-check": "vue-tsc --noEmit",
+    "svg-test": "tsx scripts/svg-render-test.ts"
   },
   "dependencies": {
     "@pixi-essentials/transformer": "^3.0.4",
@@ -31,6 +32,9 @@
     "@vitejs/plugin-vue": "^5.0.4",
     "msdf-bmfont-xml": "^2.8.0",
     "pixi-bridge": "file:../../flora-studio/pixi-audit/pixi-bridge",
+    "playwright": "^1.60.0",
+    "svgpath": "^2.6.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.4.0",
     "vite": "^5.2.0",
     "vue-tsc": "^2.0.0"
