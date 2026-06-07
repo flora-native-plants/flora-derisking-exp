@@ -26,8 +26,8 @@ import svgpath from 'svgpath'
 const STRATEGIES = [
   { id: 'A',  label: 'A: raw svg()',        desc: 'Graphics.svg() unmodified' },
   { id: 'B1', label: 'B1: re-spaced nums',  desc: 'Insert spaces around compressed signs' },
-  { id: 'B2', label: 'B2: abs+unshort',     desc: 'svgpath.abs().unshort()' },
-  { id: 'C',  label: 'C: raster 8×',        desc: 'HTMLImage at 8× natural size' },
+  { id: 'C',  label: 'C: raster img 8×',   desc: 'HTMLImage at 8× (explicit dims)' },
+  { id: 'D',  label: 'D: canvas 8×',       desc: 'Canvas+drawImage (browser SVG render)' },
 ] as const
 
 const NATURAL_W = 290
@@ -109,27 +109,52 @@ function renderB1(markup: string) {
   cells[1].addChild(g)
 }
 
-function renderB2(markup: string) {
-  clearCell(2)
-  const g = new Graphics()
-  try {
-    g.svg(normalizePathsAbsolute(markup))
-  } catch (e) {
-    statusMsg.value = `Strategy B2 error: ${e}`
-  }
-  g.scale.set(cellScale())
-  cells[2].addChild(g)
+/** Inject explicit width/height into SVG markup so browsers rasterize at the right size */
+function svgWithDims(markup: string, w: number, h: number): string {
+  return markup.replace('<svg ', `<svg width="${w}" height="${h}" `)
 }
 
 async function renderC(markup: string): Promise<void> {
-  clearCell(3)
+  clearCell(2)
+  const rasterW = NATURAL_W * 8
+  const rasterH = NATURAL_H * 8
   return new Promise((resolve) => {
-    const blob = new Blob([markup], { type: 'image/svg+xml' })
+    const blob = new Blob([svgWithDims(markup, rasterW, rasterH)], { type: 'image/svg+xml' })
     const url  = URL.createObjectURL(blob)
-    const img  = new Image(NATURAL_W * 8, NATURAL_H * 8)
+    const img  = new Image(rasterW, rasterH)
     img.onload = () => {
       URL.revokeObjectURL(url)
       const source  = new ImageSource({ resource: img })
+      const texture = new Texture({ source })
+      const sprite  = new Sprite(texture)
+      const sc = cellScale()
+      sprite.width  = NATURAL_W * sc
+      sprite.height = NATURAL_H * sc
+      cells[2].addChild(sprite)
+      resolve()
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); resolve() }
+    img.src = url
+  })
+}
+
+/** Strategy D: canvas + drawImage — browser renders the SVG with full fill-rule support */
+async function renderD(markup: string): Promise<void> {
+  clearCell(3)
+  const rasterW = NATURAL_W * 8
+  const rasterH = NATURAL_H * 8
+  return new Promise((resolve) => {
+    const canvas = document.createElement('canvas')
+    canvas.width  = rasterW
+    canvas.height = rasterH
+    const ctx = canvas.getContext('2d')!
+    const blob = new Blob([svgWithDims(markup, rasterW, rasterH)], { type: 'image/svg+xml' })
+    const url  = URL.createObjectURL(blob)
+    const img  = new Image(rasterW, rasterH)
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      ctx.drawImage(img, 0, 0, rasterW, rasterH)
+      const source  = new ImageSource({ resource: canvas })
       const texture = new Texture({ source })
       const sprite  = new Sprite(texture)
       const sc = cellScale()
@@ -147,8 +172,7 @@ async function renderAll(markup: string) {
   statusMsg.value = 'Rendering…'
   renderA(markup)
   renderB1(markup)
-  renderB2(markup)
-  await renderC(markup)
+  await Promise.all([renderC(markup), renderD(markup)])
   app?.renderer.render(app.stage)
   statusMsg.value = `Rendered at zoom ${currentZoom.value}×`
 }
