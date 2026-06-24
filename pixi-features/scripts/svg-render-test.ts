@@ -19,7 +19,7 @@ import { chromium } from 'playwright'
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join, basename, resolve } from 'node:path'
 
-const PORT       = 5174
+const PORT       = 5202
 const OUTPUT_DIR = resolve(import.meta.dirname, '..', '.pixi-render-test')
 const FIXTURE    = resolve(import.meta.dirname, '..', 'test-fixtures', 'fnp-logo.svg')
 const ZOOM_LEVELS = [1, 4, 10, 40] as const
