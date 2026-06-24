@@ -6,6 +6,7 @@
  *  B  Living Hairline — marching ants on path + soft blur-glow pulse
  *  C  Ink Bloom      — outline draws itself on, leaf ticks bloom, displacement wobble
  *  D  Aura           — pure blur-glow fill behind hairline, pulsing vertex rings
+ *  E  Arc Pulse      — C's race-track draw-on + D's pulsing circles, no leaf ticks
  *
  * Glow is core BlurFilter (not pixi-filters GlowFilter) — matches the look the design was tuned against.
  */
@@ -14,7 +15,7 @@ import { Application, Graphics, Container, Sprite, Texture, BlurFilter, Displace
 import gsap from 'gsap'
 import { useFps } from '../shared/useFps'
 
-type Mode = 'A' | 'B' | 'C' | 'D'
+type Mode = 'A' | 'B' | 'C' | 'D' | 'E'
 interface ModeHandle { enter(): void; update?(dt: number): void; refresh(): void; destroy(): void }
 
 // ---- palette -------------------------------------------------------------------
@@ -67,6 +68,7 @@ const aBreath = ref(1.2), aMon = ref(3.4), aGlow = ref(0)
 const bSpeed  = ref(40),  bDash = ref(6),  bGlow = ref(1.4)
 const cDur    = ref(1.2), cWob  = ref(1.5), cGlow = ref(0.8)
 const dDist   = ref(18),  dStr  = ref(2.4), dSpd  = ref(2.0)
+const eDur    = ref(1.2), eSpd  = ref(30),  eGlow = ref(1.0)
 
 // ---- Pixi objects (markRaw — never proxied) ------------------------------------
 let app          = markRaw({} as Application)
@@ -327,8 +329,91 @@ function makeD(): ModeHandle {
   return { enter, refresh, destroy }
 }
 
+// ---- E · Arc Pulse -------------------------------------------------------------
+// C's race-track draw-on entrance + D's pulsing vertex rings. No leaf ticks.
+// Sequence: dim ghost path fades in → bright line draws around → sweep arc starts + rings pop in.
+function makeE(): ModeHandle {
+  // Dim "ghost" full outline — always visible once entrance begins
+  const base = markRaw(new Graphics())
+  const drawBase = () => { base.clear(); base.poly(SP.flat()).stroke({ width: 1.2, color: chromeHex.value }) }
+  drawBase(); base.alpha = 0; chromeLayer.addChild(base)
+
+  // Bright draw-on line (entrance progress)
+  const line = markRaw(new Graphics()); chromeLayer.addChild(line)
+
+  // Moving bright sweep arc (post-entrance, loops continuously)
+  const sweep = markRaw(new Graphics()); sweep.alpha = 0; chromeLayer.addChild(sweep)
+
+  // Glow behind the path
+  const glow = makeGlow('stroke'); glow.blur.strength = 5
+
+  // Pulsing rings at each SP vertex (no leaf ticks)
+  const rings = SP.map(([x,y]) => {
+    const r = markRaw(new Container()); r.position.set(x,y)
+    r.addChild(markRaw(new Graphics())); chromeLayer.addChild(r); return r
+  })
+  const drawRings = () => rings.forEach(r => { const g = r.children[0] as Graphics; g.clear()
+    g.circle(0,0,4.5).stroke({ width: 1.2, color: chromeHex.value }) })
+  drawRings()
+
+  const SWEEP_LEN = PER * 0.18
+  let sweepPos = 0, sweeping = false
+
+  const drawProgress = (t: number) => { line.clear()
+    const end = PER * t; if (end <= 0) return
+    const p0 = pointAt(0); line.moveTo(p0[0], p0[1])
+    for (let s = 2; s < end; s += 2) { const p = pointAt(s); line.lineTo(p[0], p[1]) }
+    const pe = pointAt(end); line.lineTo(pe[0], pe[1])
+    line.stroke({ width: 2.0, color: chromeHex.value, cap: 'round', join: 'round' }) }
+
+  const drawSweep = () => { sweep.clear()
+    const p0 = pointAt(sweepPos); sweep.moveTo(p0[0], p0[1])
+    for (let s = sweepPos + 2; s < sweepPos + SWEEP_LEN; s += 2) { const p = pointAt(s % PER); sweep.lineTo(p[0], p[1]) }
+    const pe = pointAt((sweepPos + SWEEP_LEN) % PER); sweep.lineTo(pe[0], pe[1])
+    sweep.stroke({ width: 2.2, color: chromeHex.value, cap: 'round' }) }
+
+  const st = { t: 0 }; let enterTw: gsap.core.Tween | null = null
+
+  const enter = () => { sweeping = false; sweep.alpha = 0; glow.g.alpha = 0
+    base.alpha = 0; line.clear(); drawBase(); drawRings()
+    rings.forEach(r => { r.scale.set(0); r.alpha = 1 })
+
+    // Ghost path fades in during draw-on
+    gsap.to(base, { alpha: 0.32, duration: 0.5 })
+
+    st.t = 0
+    enterTw = gsap.fromTo(st, { t: 0 }, { t: 1, duration: eDur.value, ease: 'power1.inOut', immediateRender: false,
+      onUpdate: () => drawProgress(st.t),
+      onComplete: () => {
+        line.clear(); sweeping = true
+        gsap.to(base, { alpha: 0.40, duration: 0.2 })   // settle to final dim opacity
+        gsap.to(sweep, { alpha: 1, duration: 0.35 })
+        gsap.to(glow.g, { alpha: 0.10 + eGlow.value * 0.11, duration: 0.5 })
+        rings.forEach((r, i) => {
+          gsap.to(r.scale, { x: 1, y: 1, duration: 0.45, delay: i*0.05, ease: 'back.out(2)',
+            onComplete: () => {
+              gsap.to(r.scale, { x: 1.5, y: 1.5, duration: 2.2, repeat: -1, yoyo: true, ease: 'sine.inOut' })
+              gsap.to(r, { alpha: 0.12, duration: 2.2, repeat: -1, yoyo: true, ease: 'sine.inOut' })
+            }
+          })
+        })
+      }
+    })
+  }
+
+  const update = (dt: number) => { if (!sweeping) return
+    sweepPos = (sweepPos + (eSpd.value / 60) * dt) % PER; drawSweep() }
+
+  const refresh = () => { drawBase(); drawRings(); glow.redraw() }
+  const destroy = () => { sweeping = false; enterTw?.kill(); gsap.killTweensOf(st)
+    rings.forEach(r => { gsap.killTweensOf(r.scale); gsap.killTweensOf(r) })
+    gsap.killTweensOf(base); gsap.killTweensOf(sweep); gsap.killTweensOf(glow.g) }
+
+  return { enter, update, refresh, destroy }
+}
+
 // ---- mode management -----------------------------------------------------------
-const FACTORY: Record<Mode, () => ModeHandle> = { A: makeA, B: makeB, C: makeC, D: makeD }
+const FACTORY: Record<Mode, () => ModeHandle> = { A: makeA, B: makeB, C: makeC, D: makeD, E: makeE }
 
 function select(id: Mode) {
   cur?.destroy?.(); clearAll()
@@ -344,6 +429,7 @@ watch([aBreath, aMon, aGlow], () => { if (mode.value === 'A') cur?.refresh?.() }
 watch([bSpeed, bDash, bGlow], () => { if (mode.value === 'B') cur?.refresh?.() })
 watch([cDur, cWob, cGlow],    () => { if (mode.value === 'C') cur?.refresh?.() })
 watch([dDist, dStr, dSpd],    () => { if (mode.value === 'D') cur?.refresh?.() })
+watch([eDur, eSpd, eGlow],    () => { if (mode.value === 'E') cur?.refresh?.() })
 
 // ---- lifecycle -----------------------------------------------------------------
 onMounted(async () => {
@@ -391,6 +477,7 @@ const MODES: { id: Mode; name: string; desc: string }[] = [
   { id: 'B', name: 'Living Hairline', desc: 'Marching ants traced along the path + soft blur-glow pulse. Sage, slow, on-brand.' },
   { id: 'C', name: 'Ink Bloom',       desc: 'Outline draws itself on, then leaf ticks bloom. DisplacementFilter gives hand-inked waver.' },
   { id: 'D', name: 'Aura',            desc: 'Pure blur-glow breathing behind a crisp hairline, with pulsing vertex dot rings.' },
+  { id: 'E', name: 'Arc Pulse',       desc: 'Ghost path + race-track draw-on entrance, then a bright arc sweeps the perimeter while vertex rings pulse.' },
 ]
 const currentMode = computed(() => MODES.find(m => m.id === mode.value)!)
 </script>
@@ -452,6 +539,16 @@ const currentMode = computed(() => MODES.find(m => m.id === mode.value)!)
         <input type="range" v-model.number="dStr" min="0.5" max="6" step="0.1" />
         <div class="row"><label>Breath speed</label><span class="val">{{ dSpd.toFixed(1) }}</span></div>
         <input type="range" v-model.number="dSpd" min="0.5" max="4" step="0.1" />
+      </template>
+
+      <!-- E sliders -->
+      <template v-else-if="mode === 'E'">
+        <div class="row"><label>Draw duration</label><span class="val">{{ eDur.toFixed(1) }}s</span></div>
+        <input type="range" v-model.number="eDur" min="0.4" max="3.0" step="0.1" />
+        <div class="row"><label>Sweep speed</label><span class="val">{{ eSpd }}</span></div>
+        <input type="range" v-model.number="eSpd" min="0" max="120" step="1" />
+        <div class="row"><label>Glow strength</label><span class="val">{{ eGlow.toFixed(1) }}</span></div>
+        <input type="range" v-model.number="eGlow" min="0" max="3" step="0.1" />
       </template>
 
       <div class="divider" />
@@ -522,7 +619,7 @@ canvas {
   scrollbar-width: thin;
 }
 
-.tabs { display: grid; grid-template-columns: repeat(4,1fr); gap: 5px; margin-bottom: 12px; }
+.tabs { display: grid; grid-template-columns: repeat(5,1fr); gap: 4px; margin-bottom: 12px; }
 .tab {
   font-family: monospace; font-size: 11px; font-weight: 600;
   padding: 7px 0; border: 1px solid #2e3628; border-radius: 6px;
