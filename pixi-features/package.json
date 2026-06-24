@@ -17,6 +17,7 @@
     "alea": "^1.0.1",
     "bezier-js": "^6.1.4",
     "fit-curve": "^0.2.0",
+    "gsap": "^3.15.0",
     "perfect-freehand": "^1.2.3",
     "pinia": "^2.3.1",
     "pixi-filters": "^6.1.5",

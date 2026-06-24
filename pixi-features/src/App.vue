@@ -45,7 +45,8 @@ const groups: Group[] = [
       { id: 'ants',         label: 'Ants · Phase Math',  comp: A('./tabs/TabMarchingAnts.vue') },
       { id: 'ants-tiling', label: 'Ants · TilingSprite', comp: A('./tabs/TabMarchingAntsTiling.vue') },
       { id: 'ants-davidfig', label: 'Ants · Davidfig',  comp: A('./tabs/TabMarchingAntsDavidfig.vue') },
-      { id: 'selection-fx', label: 'Selection FX',     comp: A('./tabs/TabSelectionFX.vue') },
+      { id: 'selection-fx',     label: 'Selection FX',     comp: A('./tabs/TabSelectionFX.vue') },
+      { id: 'selection-design', label: 'Selection Design', comp: A('./tabs/TabSelectionDesign.vue') },
     ],
   },
   {
