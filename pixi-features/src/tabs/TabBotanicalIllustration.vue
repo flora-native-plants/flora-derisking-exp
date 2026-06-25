@@ -18,7 +18,7 @@
  */
 import { ref, watch, onMounted, onUnmounted, markRaw } from 'vue'
 import {
-  Application, Assets, Container, Graphics, Sprite, TilingSprite, Texture, RenderTexture, BlurFilter,
+  Application, Assets, Container, Graphics, Sprite, TilingSprite, Texture,
 } from 'pixi.js'
 import { fetchPlantSvg } from '../lib/plantApi'
 import { extractSilhouette, type Vec2 } from '../lib/silhouette'
@@ -54,12 +54,13 @@ const bleed        = ref(7)      // mask blur px -> soft bleeding edge
 const dilation     = ref(4)      // silhouette fuse radius (re-extracts)
 
 const contourOn    = ref(true)
-const contourWidth = ref(2.0)
+const contourStyle = ref<'textured' | 'vector'>('textured')  // textured = graphite tooth
+const contourWidth = ref(2.5)
 const contourWobble= ref(2.5)
-const contourAlpha = ref(0.85)
+const contourAlpha = ref(0.9)
 
 const grainOn      = ref(true)
-const grainStrength= ref(0.35)
+const grainStrength= ref(0.3)
 const showArt      = ref(false)  // faint original SVG overlay to keep plant identity
 
 const DISPLAY = 460              // px the plant is rendered at
@@ -108,46 +109,55 @@ async function loadSvgTexture(svg: string): Promise<Texture> {
 }
 
 async function ensurePlantData() {
-  const key = `${plantId.value}:${dilation.value}`
+  // Capture id/dilation up front so a mid-flight control change can't desync
+  // svg / artTex / silhouette.
+  const id = plantId.value
+  const dil = dilation.value
+  const key = `${id}:${dil}`
   if (key === cachedKey && silhouettePolys.length) return
-  status.value = `Fetching plant ${plantId.value}…`
-  svgString = await fetchPlantSvg(plantId.value)
+  status.value = `Fetching plant ${id}…`
+  svgString = await fetchPlantSvg(id)
   artTex = await loadSvgTexture(svgString)
   status.value = 'Extracting silhouette…'
-  const sil = await extractSilhouette(svgString, { rasterSize: RASTER, dilationPx: dilation.value }, plantId.value)
+  const sil = await extractSilhouette(svgString, { rasterSize: RASTER, dilationPx: dil }, id)
   silhouettePolys = sil.polygons
   cachedKey = key
 }
 
-const MASK_PAD = 90               // px around DISPLAY so blurred bleed isn't clipped
-let disposables: { destroy: (opts?: unknown) => void }[] = []
+/** Inflate a polygon about its centroid — pushes the wash mask past the contour. */
+function inflatePoly(poly: Vec2[], factor: number): Vec2[] {
+  if (factor === 1) return poly
+  let cx = 0, cy = 0
+  for (const p of poly) { cx += p.x; cy += p.y }
+  cx /= poly.length; cy /= poly.length
+  return poly.map(p => ({ x: cx + (p.x - cx) * factor, y: cy + (p.y - cy) * factor }))
+}
 
 /**
- * Soft alpha mask = silhouette rendered to a RenderTexture, optionally blurred.
- * A BlurFilter applied directly to a Graphics-as-mask is ignored by Pixi's mask
- * system; baking to a texture and masking with the resulting Sprite gives true
- * soft (alpha) edges, so the wash bleeds past the crisp SVG outline.
+ * Filled-polygon mask used directly as a stencil (geometry) mask. We deliberately
+ * use geometry masks, NOT Sprite/RenderTexture alpha masks: stacking or churning
+ * alpha masks each rebuild crashes Pixi v8's AlphaMaskPipe. Stencil masks are
+ * robust and need no RenderTexture. `inflate` (>1) expands the shape so the wash
+ * spills past the crisp contour; the wash texture's own ragged edges soften it.
  */
-function buildSoftMaskSprite(blurPx: number): Sprite {
-  const size = DISPLAY + MASK_PAD * 2
-  const g = new Graphics()
+function buildMaskGraphics(inflate = 1): Graphics {
+  const g = markRaw(new Graphics())
   for (const poly of silhouettePolys) {
     if (poly.length < 3) continue
-    g.poly(scalePoly(poly)).fill({ color: 0xffffff })
+    g.poly(inflatePoly(scalePoly(poly), inflate)).fill({ color: 0xffffff })
   }
-  const holder = new Container()
-  holder.addChild(g)
-  holder.position.set(size / 2, size / 2)          // origin-centred shape -> RT centre
-  if (blurPx > 0) holder.filters = [new BlurFilter({ strength: blurPx })]
+  return g
+}
 
-  const rt = RenderTexture.create({ width: size, height: size, antialias: true })
-  app.renderer.render({ container: holder, target: rt })
-  holder.destroy({ children: true })
-  disposables.push(rt)
-
-  const sprite = markRaw(new Sprite(rt))
-  sprite.position.set(-size / 2, -size / 2)
-  return sprite
+/** A wobbled outline band (stroked geometry) mask — clips a pencil texture to the contour. */
+function buildContourBandMask(width: number): Graphics {
+  const g = markRaw(new Graphics())
+  for (const poly of silhouettePolys) {
+    if (poly.length < 3) continue
+    const pts = wobblePoly(scalePoly(poly), contourWobble.value)
+    g.poly(pts, true).stroke({ color: 0xffffff, width, join: 'round', cap: 'round' })
+  }
+  return g
 }
 
 function buildWashLayer(): Container {
@@ -165,13 +175,14 @@ function buildWashLayer(): Container {
   wash.filters = [tint]
   layer.addChild(wash)
 
-  // Soft mask -> wash fades out past the crisp edge (bleed).
-  const mask = buildSoftMaskSprite(bleed.value)
+  // Inflated stencil mask -> wash spills past the crisp contour (bleed).
+  const mask = buildMaskGraphics(1 + bleed.value / 100)
   layer.addChild(mask)
   layer.mask = mask
   return layer
 }
 
+/** Graphite-grain tooth, multiplied over the wash and clipped to the silhouette. */
 function buildGrainLayer(): Container {
   const layer = markRaw(new Container())
   const m = DISPLAY * 0.6
@@ -181,7 +192,7 @@ function buildGrainLayer(): Container {
   grain.alpha = grainStrength.value
   grain.blendMode = 'multiply'
   layer.addChild(grain)
-  const mask = buildSoftMaskSprite(Math.min(bleed.value, 4))   // tooth stays mostly inside
+  const mask = buildMaskGraphics(1)   // tooth stays inside the silhouette
   layer.addChild(mask)
   layer.mask = mask
   return layer
@@ -200,6 +211,30 @@ function buildContour(): Graphics {
   return g
 }
 
+/** Tinted-texture layer: white-bg texture -> luminance->alpha + tint, clipped to a mask. */
+function buildTintedTextureLayer(
+  tex: Texture, tint: [number, number, number], strength: number, mask: Graphics, tileScale: number,
+): Container {
+  const layer = markRaw(new Container())
+  const m = DISPLAY * 0.6
+  const sprite = markRaw(new TilingSprite({ texture: tex, width: DISPLAY + m, height: DISPLAY + m }))
+  sprite.position.set(-(DISPLAY + m) / 2, -(DISPLAY + m) / 2)
+  sprite.tileScale.set((tileScale * DISPLAY) / tex.width)
+  sprite.filters = [new WashTextureTintFilter(tint, strength, 0.02)]
+  layer.addChild(sprite)
+  layer.addChild(mask)
+  layer.mask = mask
+  return layer
+}
+
+const CONTOUR_TINT = hexToLinear('#4a3b2a')  // sepia graphite
+
+/** Graphite-textured contour: pencil grain clipped to a wobbled outline band. */
+function buildTexturedContour(): Container {
+  const band = buildContourBandMask(contourWidth.value * 2.2)
+  return buildTintedTextureLayer(grainTex, CONTOUR_TINT, contourAlpha.value, band, 1.0)
+}
+
 function currentColor(): string {
   return PLANTS.find(p => p.id === plantId.value)?.color ?? '#4CAF50'
 }
@@ -207,8 +242,6 @@ function currentColor(): string {
 function rebuildPlant() {
   if (!app.stage || !silhouettePolys.length) return
   plantRoot.removeChildren().forEach(c => c.destroy({ children: true }))
-  disposables.forEach(d => d.destroy(true))
-  disposables = []
 
   // faint original art, under everything, to keep plant identity if wanted
   if (showArt.value && artTex) {
@@ -222,7 +255,9 @@ function rebuildPlant() {
 
   plantRoot.addChild(buildWashLayer())
   if (grainOn.value) plantRoot.addChild(buildGrainLayer())
-  if (contourOn.value) plantRoot.addChild(buildContour())
+  if (contourOn.value) {
+    plantRoot.addChild(contourStyle.value === 'textured' ? buildTexturedContour() : buildContour())
+  }
   status.value = `${PLANTS.find(p => p.id === plantId.value)?.name} · ${silhouettePolys.length} blob(s)`
 }
 
@@ -260,7 +295,7 @@ watch([plantId, dilation], reloadAll)
 // swap wash texture
 watch(washKey, async () => { washTex = markRaw(await Assets.load(WASH_TEXTURES[washKey.value])); rebuildPlant() })
 // cheap rebuilds
-watch([washStrength, paperCut, washScale, bleed, contourOn, contourWidth, contourWobble, contourAlpha, grainOn, grainStrength, showArt], rebuildPlant)
+watch([washStrength, paperCut, washScale, bleed, contourOn, contourStyle, contourWidth, contourWobble, contourAlpha, grainOn, grainStrength, showArt], rebuildPlant)
 </script>
 
 <template>
@@ -290,7 +325,13 @@ watch([washStrength, paperCut, washScale, bleed, contourOn, contourWidth, contou
 
       <div class="group">pencil contour</div>
       <label><input type="checkbox" v-model="contourOn" /> contour on</label>
-      <label>width <input type="range" min="0.5" max="5" step="0.1" v-model.number="contourWidth" /> {{ contourWidth.toFixed(1) }}</label>
+      <label>style
+        <select v-model="contourStyle">
+          <option value="textured">textured (graphite)</option>
+          <option value="vector">vector</option>
+        </select>
+      </label>
+      <label>width <input type="range" min="0.5" max="6" step="0.1" v-model.number="contourWidth" /> {{ contourWidth.toFixed(1) }}</label>
       <label>wobble <input type="range" min="0" max="8" step="0.5" v-model.number="contourWobble" /> {{ contourWobble.toFixed(1) }}</label>
       <label>alpha <input type="range" min="0" max="1" step="0.05" v-model.number="contourAlpha" /> {{ contourAlpha.toFixed(2) }}</label>
 
