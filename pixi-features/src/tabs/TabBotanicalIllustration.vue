@@ -20,7 +20,7 @@ import { ref, watch, onMounted, onUnmounted, markRaw } from 'vue'
 import {
   Application, Assets, Container, Graphics, Sprite, TilingSprite, Texture,
 } from 'pixi.js'
-import { fetchPlantSvg } from '../lib/plantApi'
+import { fetchPlantSvg, fetchPlantList, type PlantSummary } from '../lib/plantApi'
 import { extractSilhouette, type Vec2 } from '../lib/silhouette'
 import { WashTextureTintFilter } from '../lib/filters/WashTextureTintFilter'
 import { useFps } from '../shared/useFps'
@@ -29,12 +29,10 @@ const { fps, frameMs } = useFps()
 const canvasEl = ref<HTMLCanvasElement>()
 const status = ref('Booting…')
 
-// ---- test subjects (public Railway plants, green-ish) -------------------------
-const PLANTS = [
-  { id: 2, name: 'Red Maple',          color: '#4CAF50' },
-  { id: 4, name: 'Everglades Palm',    color: '#4CAF50' },
-  { id: 5, name: 'Giant Leather Fern', color: '#6E8B5A' },
-] as const
+// Live list of all public Railway plants with artwork (fetched on mount).
+const plants = ref<PlantSummary[]>([])
+const DEFAULT_PLANT_ID = 2        // Red Maple
+const FALLBACK_COLOR = '#4CAF50'
 
 const WASH_TEXTURES = {
   'wash-green':     '/textures/watercolor/wash-green.png',
@@ -45,13 +43,19 @@ type WashKey = keyof typeof WASH_TEXTURES
 const GRAIN_TEXTURE = '/textures/pencil/grain-heavy.jpg'
 
 // ---- live controls ------------------------------------------------------------
-const plantId      = ref<number>(PLANTS[0].id)
+const plantId      = ref<number>(DEFAULT_PLANT_ID)
 const washKey      = ref<WashKey>('wash-green')
 const washStrength = ref(0.85)   // wetness / overall pigment opacity
 const paperCut     = ref(0.04)   // luminance threshold for "paper"
 const washScale    = ref(1.4)    // wash texture zoom inside the shape
 const bleed        = ref(7)      // mask blur px -> soft bleeding edge
 const dilation     = ref(4)      // silhouette fuse radius (re-extracts)
+
+// Second "bloom" colour, like the Plant Style Playground's Inked Cluster preset:
+// a warm accent pooled in the centre of the silhouette over the primary wash.
+const bloomColor    = ref('#a07560')
+const bloomStrength = ref(0.5)   // 0 = off
+const bloomSize     = ref(0.6)   // central fraction of the silhouette it fills
 
 const contourOn    = ref(true)
 const contourStyle = ref<'textured' | 'vector'>('textured')  // textured = graphite tooth
@@ -182,6 +186,12 @@ function buildWashLayer(): Container {
   return layer
 }
 
+/** Bloom: a warm second colour pooled in the centre, over the primary wash. */
+function buildBloomLayer(): Container {
+  const mask = buildMaskGraphics(bloomSize.value)   // deflated -> central region only
+  return buildTintedTextureLayer(washTex, hexToLinear(bloomColor.value), bloomStrength.value, mask, washScale.value)
+}
+
 /** Graphite-grain tooth, multiplied over the wash and clipped to the silhouette. */
 function buildGrainLayer(): Container {
   const layer = markRaw(new Container())
@@ -235,8 +245,19 @@ function buildTexturedContour(): Container {
   return buildTintedTextureLayer(grainTex, CONTOUR_TINT, contourAlpha.value, band, 1.0)
 }
 
+function currentPlant(): PlantSummary | undefined {
+  return plants.value.find(p => p.id === plantId.value)
+}
+
 function currentColor(): string {
-  return PLANTS.find(p => p.id === plantId.value)?.color ?? '#4CAF50'
+  // Many plants have null/empty plan_color; `?? fallback` misses "" (-> NaN -> black).
+  const c = currentPlant()?.planColor
+  return c && /^#[0-9a-fA-F]{6}$/.test(c) ? c : FALLBACK_COLOR
+}
+
+function randomPlant() {
+  if (!plants.value.length) return
+  plantId.value = plants.value[Math.floor(Math.random() * plants.value.length)].id
 }
 
 function rebuildPlant() {
@@ -254,11 +275,12 @@ function rebuildPlant() {
   }
 
   plantRoot.addChild(buildWashLayer())
+  if (bloomStrength.value > 0) plantRoot.addChild(buildBloomLayer())
   if (grainOn.value) plantRoot.addChild(buildGrainLayer())
   if (contourOn.value) {
     plantRoot.addChild(contourStyle.value === 'textured' ? buildTexturedContour() : buildContour())
   }
-  status.value = `${PLANTS.find(p => p.id === plantId.value)?.name} · ${silhouettePolys.length} blob(s)`
+  status.value = `${currentPlant()?.commonName ?? plantId.value} · ${silhouettePolys.length} blob(s)`
 }
 
 async function reloadAll() {
@@ -275,10 +297,13 @@ onMounted(async () => {
   app = markRaw(new Application())
   await app.init({ canvas: canvasEl.value!, resizeTo: canvasEl.value!.parentElement!, antialias: true, background: 0xf2ead4 })
 
-  ;[washTex, grainTex] = await Promise.all([
+  let loaded: PlantSummary[] = []
+  ;[washTex, grainTex, loaded] = await Promise.all([
     Assets.load(WASH_TEXTURES[washKey.value]),
     Assets.load(GRAIN_TEXTURE),
+    fetchPlantList().catch(() => [] as PlantSummary[]),
   ])
+  plants.value = loaded.sort((a, b) => a.commonName.localeCompare(b.commonName))
 
   plantRoot = markRaw(new Container())
   plantRoot.position.set(app.screen.width / 2, app.screen.height / 2)
@@ -295,7 +320,7 @@ watch([plantId, dilation], reloadAll)
 // swap wash texture
 watch(washKey, async () => { washTex = markRaw(await Assets.load(WASH_TEXTURES[washKey.value])); rebuildPlant() })
 // cheap rebuilds
-watch([washStrength, paperCut, washScale, bleed, contourOn, contourStyle, contourWidth, contourWobble, contourAlpha, grainOn, grainStrength, showArt], rebuildPlant)
+watch([washStrength, paperCut, washScale, bleed, bloomColor, bloomStrength, bloomSize, contourOn, contourStyle, contourWidth, contourWobble, contourAlpha, grainOn, grainStrength, showArt], rebuildPlant)
 </script>
 
 <template>
@@ -307,9 +332,11 @@ watch([washStrength, paperCut, washScale, bleed, contourOn, contourStyle, contou
       <div class="title">Botanical Illustration</div>
       <label>plant
         <select v-model.number="plantId">
-          <option v-for="p in PLANTS" :key="p.id" :value="p.id">{{ p.name }}</option>
+          <option v-for="p in plants" :key="p.id" :value="p.id">{{ p.commonName }}</option>
         </select>
+        <button type="button" @click="randomPlant" title="random plant">🎲</button>
       </label>
+      <div class="meta">{{ plants.length }} plants · {{ currentPlant()?.scientificName ?? '—' }}</div>
       <label>wash tex
         <select v-model="washKey">
           <option v-for="k in Object.keys(WASH_TEXTURES)" :key="k" :value="k">{{ k }}</option>
@@ -322,6 +349,9 @@ watch([washStrength, paperCut, washScale, bleed, contourOn, contourStyle, contou
       <label>wash zoom <input type="range" min="0.5" max="3" step="0.1" v-model.number="washScale" /> {{ washScale.toFixed(1) }}</label>
       <label>bleed <input type="range" min="0" max="20" step="1" v-model.number="bleed" /> {{ bleed }}</label>
       <label>dilation <input type="range" min="0" max="14" step="1" v-model.number="dilation" /> {{ dilation }}</label>
+      <label>bloom <input type="color" v-model="bloomColor" /> <code>{{ bloomColor }}</code></label>
+      <label>bloom amt <input type="range" min="0" max="1" step="0.05" v-model.number="bloomStrength" /> {{ bloomStrength.toFixed(2) }}</label>
+      <label>bloom size <input type="range" min="0.2" max="0.95" step="0.05" v-model.number="bloomSize" /> {{ bloomSize.toFixed(2) }}</label>
 
       <div class="group">pencil contour</div>
       <label><input type="checkbox" v-model="contourOn" /> contour on</label>
@@ -354,6 +384,8 @@ canvas { display: block; width: 100%; height: 100%; }
 .panel .title { font-weight: bold; font-size: 12px; margin-bottom: 2px; }
 .panel .group { font-weight: bold; color: #8a7f66; margin-top: 6px; border-top: 1px solid #e3d9c0; padding-top: 4px; }
 .panel label { display: flex; align-items: center; gap: 6px; }
+.panel .meta { font-size: 10px; color: #9a8f76; margin: -2px 0 2px; font-style: italic; }
+.panel button { cursor: pointer; border: 1px solid #d8cdb4; background: #fff; border-radius: 4px; padding: 0 5px; }
 .panel input[type=range] { flex: 1; }
 .status { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); font-family: monospace; font-size: 11px; color: #8a7f66; background: rgba(255,255,255,0.7); padding: 5px 12px; border-radius: 4px; pointer-events: none; }
 </style>
