@@ -54,8 +54,9 @@ const dilation     = ref(4)      // silhouette fuse radius (re-extracts)
 // Second "bloom" colour, like the Plant Style Playground's Inked Cluster preset:
 // a warm accent pooled in the centre of the silhouette over the primary wash.
 const bloomColor    = ref('#a07560')
-const bloomStrength = ref(0.5)   // 0 = off
-const bloomSize     = ref(0.6)   // central fraction of the silhouette it fills
+const bloomStrength = ref(0.7)   // 0 = off
+const bloomSize     = ref(0.55)  // bloom radius as fraction of plant radius
+const bloomSoftness = ref(0.55)  // edge falloff width
 
 const contourOn    = ref(true)
 const contourStyle = ref<'textured' | 'vector'>('textured')  // textured = graphite tooth
@@ -186,10 +187,77 @@ function buildWashLayer(): Container {
   return layer
 }
 
-/** Bloom: a warm second colour pooled in the centre, over the primary wash. */
-function buildBloomLayer(): Container {
-  const mask = buildMaskGraphics(bloomSize.value)   // deflated -> central region only
-  return buildTintedTextureLayer(washTex, hexToLinear(bloomColor.value), bloomStrength.value, mask, washScale.value)
+/** Seeded bloom anchor: polar offset 0.15..0.32 of radius from centre (per plant). */
+function bloomAnchor(seed: number): { x: number; y: number } {
+  const frac = (n: number) => { const s = Math.sin(n * 127.1) * 43758.5453; return s - Math.floor(s) }
+  const a = frac(seed + 1) * Math.PI * 2
+  const r = 0.15 + frac((seed + 1) * 7) * 0.17
+  return { x: 0.5 + Math.cos(a) * r, y: 0.5 + Math.sin(a) * r }
+}
+
+function smoothstep(e0: number, e1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)))
+  return t * t * (3 - 2 * t)
+}
+
+function hexToRgb255(hex: string): [number, number, number] {
+  const n = parseInt(hex.replace('#', ''), 16)
+  return [n >> 16 & 255, n >> 8 & 255, n & 255]
+}
+
+/**
+ * Bloom: a warm second colour as a soft, noise-perturbed radial blob at a seeded
+ * OFF-CENTRE anchor (matching the Plant Style Playground's Inked Cluster), clipped
+ * to the silhouette on a 2D canvas. Returns a centred Sprite, or null if off.
+ */
+function buildBloomSprite(): Sprite | null {
+  if (bloomStrength.value <= 0 || !silhouettePolys.length) return null
+  const size = DISPLAY
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+
+  const anchor = bloomAnchor(plantId.value)
+  const ax = anchor.x * size
+  const ay = anchor.y * size
+  const radiusPx = Math.max(1, bloomSize.value * size * 0.5)
+  const soft = bloomSoftness.value
+  const [r, g, b] = hexToRgb255(bloomColor.value)
+
+  const img = ctx.createImageData(size, size)
+  const d = img.data
+  for (let py = 0; py < size; py++) {
+    for (let px = 0; px < size; px++) {
+      const dx = (px - ax) / radiusPx
+      const dy = (py - ay) / radiusPx
+      // mild angular perturbation so the edge isn't a perfect circle
+      const wobble = Math.sin(Math.atan2(dy, dx) * 3 + plantId.value) * 0.12
+      const dist = Math.sqrt(dx * dx + dy * dy) + wobble
+      const alpha = 1 - smoothstep(1 - soft, 1 + 0.2, dist)
+      const i = (py * size + px) * 4
+      d[i] = r; d[i + 1] = g; d[i + 2] = b
+      d[i + 3] = Math.round(alpha * 255 * bloomStrength.value)
+    }
+  }
+  ctx.putImageData(img, 0, 0)
+
+  // Clip the bloom to the silhouette (canvas 0..size space).
+  const k = size / RASTER
+  ctx.globalCompositeOperation = 'destination-in'
+  ctx.beginPath()
+  for (const poly of silhouettePolys) {
+    if (poly.length < 3) continue
+    ctx.moveTo(poly[0].x * k, poly[0].y * k)
+    for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x * k, poly[i].y * k)
+    ctx.closePath()
+  }
+  ctx.fill()
+  ctx.globalCompositeOperation = 'source-over'
+
+  const sprite = markRaw(new Sprite(Texture.from(canvas)))
+  sprite.anchor.set(0.5)
+  return sprite
 }
 
 /** Graphite-grain tooth, multiplied over the wash and clipped to the silhouette. */
@@ -275,7 +343,8 @@ function rebuildPlant() {
   }
 
   plantRoot.addChild(buildWashLayer())
-  if (bloomStrength.value > 0) plantRoot.addChild(buildBloomLayer())
+  const bloom = buildBloomSprite()
+  if (bloom) plantRoot.addChild(bloom)
   if (grainOn.value) plantRoot.addChild(buildGrainLayer())
   if (contourOn.value) {
     plantRoot.addChild(contourStyle.value === 'textured' ? buildTexturedContour() : buildContour())
@@ -320,7 +389,7 @@ watch([plantId, dilation], reloadAll)
 // swap wash texture
 watch(washKey, async () => { washTex = markRaw(await Assets.load(WASH_TEXTURES[washKey.value])); rebuildPlant() })
 // cheap rebuilds
-watch([washStrength, paperCut, washScale, bleed, bloomColor, bloomStrength, bloomSize, contourOn, contourStyle, contourWidth, contourWobble, contourAlpha, grainOn, grainStrength, showArt], rebuildPlant)
+watch([washStrength, paperCut, washScale, bleed, bloomColor, bloomStrength, bloomSize, bloomSoftness, contourOn, contourStyle, contourWidth, contourWobble, contourAlpha, grainOn, grainStrength, showArt], rebuildPlant)
 </script>
 
 <template>
@@ -352,6 +421,7 @@ watch([washStrength, paperCut, washScale, bleed, bloomColor, bloomStrength, bloo
       <label>bloom <input type="color" v-model="bloomColor" /> <code>{{ bloomColor }}</code></label>
       <label>bloom amt <input type="range" min="0" max="1" step="0.05" v-model.number="bloomStrength" /> {{ bloomStrength.toFixed(2) }}</label>
       <label>bloom size <input type="range" min="0.2" max="0.95" step="0.05" v-model.number="bloomSize" /> {{ bloomSize.toFixed(2) }}</label>
+      <label>bloom soft <input type="range" min="0.1" max="1" step="0.05" v-model.number="bloomSoftness" /> {{ bloomSoftness.toFixed(2) }}</label>
 
       <div class="group">pencil contour</div>
       <label><input type="checkbox" v-model="contourOn" /> contour on</label>
