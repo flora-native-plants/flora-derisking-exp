@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { isLoggedIn, username, login, logout, FloraApiError } from '../lib/floraApi'
+import { isLoggedIn, username, login, logout, FloraApiError, apiBaseUrl } from '../lib/floraApi'
+
+const apiHost = apiBaseUrl.replace(/^https?:\/\//, '')
 
 const STORAGE_KEY_BASIC_AUTH = 'flora_auth_basic'
 const STORAGE_KEY_USERNAME = 'flora_auth_username'
@@ -71,7 +73,7 @@ function onSignOut() {
 
     <div v-else class="login-form">
       <h3>Sign in to Flora</h3>
-      <p class="hint">Connects to <code>zamia-design.com</code></p>
+      <p class="hint">Connects to <code>{{ apiHost }}</code></p>
 
       <div class="field">
         <label>Username</label>

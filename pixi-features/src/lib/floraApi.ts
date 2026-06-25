@@ -2,7 +2,7 @@
  * Flora API client for pixi-features.
  *
  * Slim port of flora-uxp's flora-fetch.ts: Basic Auth from localStorage,
- * https://zamia-design.com base URL, JSON + binary helpers.
+ * Railway base URL, JSON + binary helpers.
  *
  * Auth state is exposed as a Vue ref so LoginPanel and consumers can react.
  */
@@ -11,7 +11,9 @@ import { ref, readonly } from 'vue'
 
 const STORAGE_KEY_BASIC_AUTH = 'flora_auth_basic'
 const STORAGE_KEY_USERNAME = 'flora_auth_username'
-const API_BASE_URL = 'https://zamia-design.com'
+// Backend moved from zamia-design.com to Railway (behind.buildflora.com),
+// matching flora-studio's default. Override with VITE_API_BASE_URL if needed.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'https://behind.buildflora.com'
 const FETCH_TIMEOUT_MS = 30_000
 
 export class FloraApiError extends Error {

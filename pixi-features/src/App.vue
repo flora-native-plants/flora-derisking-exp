@@ -25,6 +25,16 @@ const groups: Group[] = [
     ],
   },
   {
+    label: 'Aliveness / Polish',
+    tabs: [
+      { id: 'water',       label: 'Water Feature',     comp: A('./tabs/TabWaterFeature.vue') },
+      { id: 'shadows',     label: 'Soft Shadows',      comp: A('./tabs/TabSoftShadows.vue') },
+      { id: 'particles',   label: 'Ambient Particles', comp: A('./tabs/TabAmbientParticles.vue') },
+      { id: 'dappled',     label: 'Dappled Light',     comp: A('./tabs/TabDappledLight.vue') },
+      { id: 'botanical',   label: 'Botanical Illustration', comp: A('./tabs/TabBotanicalIllustration.vue') },
+    ],
+  },
+  {
     label: 'Drawing Tools',
     tabs: [
       { id: 'pen',         label: 'Pen Tool',          comp: A('./tabs/TabPenTool.vue') },
@@ -46,6 +56,9 @@ const groups: Group[] = [
       { id: 'ants-tiling', label: 'Ants · TilingSprite', comp: A('./tabs/TabMarchingAntsTiling.vue') },
       { id: 'ants-davidfig', label: 'Ants · Davidfig',  comp: A('./tabs/TabMarchingAntsDavidfig.vue') },
       { id: 'selection-fx',     label: 'Selection FX',     comp: A('./tabs/TabSelectionFX.vue') },
+      { id: 'selection-fx2',    label: 'Selection FX 2',   comp: A('./tabs/TabSelectionFX2.vue') },
+      { id: 'selection-jfa',    label: 'Selection · JFA',  comp: A('./tabs/TabSelectionJFA.vue') },
+      { id: 'selection-precise', label: 'Selection · Precise', comp: A('./tabs/TabSelectionPrecise.vue') },
       { id: 'selection-design', label: 'Selection Design', comp: A('./tabs/TabSelectionDesign.vue') },
     ],
   },
