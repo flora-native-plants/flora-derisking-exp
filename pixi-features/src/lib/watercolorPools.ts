@@ -31,6 +31,8 @@ export interface WatercolorPoolParams {
   softness: number         // 0..1 — pool edge falloff width
   tonalDepth: number       // 0..1 — spread of light-centre → dark-lobe values (volume)
   tempShift: number        // 0..1 — warm-highlight vs cool-shadow colour split
+  backruns: number         // 0..1 — cauliflower back-run strength (light core, dark feathered ring)
+  driedEdge: number        // 0..1 — dark feathered rim hugging the silhouette (dried hard edge)
 }
 
 const LO_FREQ = 0.012      // pool-boundary warp frequency (large patches)
@@ -188,6 +190,55 @@ function buildPools(seed: number, box: { cx: number; cy: number; radius: number 
   return pools
 }
 
+interface Backrun {
+  ax: number; ay: number; radius: number; dark: RGB
+}
+
+/** Seeded back-runs: a light core ringed by a dark feathered fringe (cauliflower
+ *  bloom), biased toward the canopy rim where real washes back-flow as they dry. */
+function buildBackruns(seed: number, box: { cx: number; cy: number; radius: number }, p: WatercolorPoolParams): Backrun[] {
+  if (p.backruns <= 0) return []
+  const rng = mulberry32(seed * 40503 + 7)
+  const foliage = hexToRgb(p.foliage)
+  const dark = scaleRgb(tempTint(foliage, -1, p.tempShift), 0.55)
+  const R = box.radius
+  const count = 1 + (rng() < 0.6 ? 1 : 0) + (rng() < 0.3 ? 1 : 0) // 1..3
+  const runs: Backrun[] = []
+  for (let i = 0; i < count; i++) {
+    const ang = rng() * Math.PI * 2
+    const dist = (0.35 + rng() * 0.45) * R // rim-biased
+    runs.push({
+      ax: box.cx + Math.cos(ang) * dist,
+      ay: box.cy + Math.sin(ang) * dist,
+      radius: R * (0.18 + rng() * 0.22),
+      dark,
+    })
+  }
+  return runs
+}
+
+/** Apply one back-run to an accumulated pixel colour (mutates via return). */
+function applyBackrun(
+  br: Backrun, px: number, py: number, o: RGB, oA: number, lo: NoiseFn, strength: number,
+): RGB {
+  if (oA < 0.02) return o
+  const dx = (px - br.ax) / br.radius
+  const dy = (py - br.ay) / br.radius
+  let dn = Math.sqrt(dx * dx + dy * dy)
+  if (dn > 1.45) return o
+  const bn = (lo((px - br.ax) * LO_FREQ * 1.8, (py - br.ay) * LO_FREQ * 1.8) + 1) * 0.5
+  dn *= 1 + 0.55 * (bn - 0.5) * 2 // irregular, feathered boundary
+  const ring = Math.exp(-((dn - 1) * (dn - 1)) / (2 * 0.12 * 0.12)) // dark pile-up at the rim
+  const inner = smoothstep(0.95, 0.3, dn)                          // lifted, pushed-out core
+  const lift = 1 + inner * strength * 0.45
+  let r = Math.min(255, o[0] * lift), g = Math.min(255, o[1] * lift), b = Math.min(255, o[2] * lift)
+  const add = Math.min(1, ring * strength)
+  r = r * (1 - add) + br.dark[0] * add
+  g = g * (1 - add) + br.dark[1] * add
+  b = b * (1 - add) + br.dark[2] * add
+  return [r, g, b]
+}
+
 /** Alpha of one pool at a pixel, with boundary warp, edge-darkening, and granulation. */
 function poolAlpha(pool: Pool, px: number, py: number, lo: NoiseFn, hi: NoiseFn, p: WatercolorPoolParams): number {
   const dx = px - pool.ax
@@ -226,6 +277,7 @@ export function renderVariantInterior(
   const k = size / raster
   const box = plantBox(polys, k)
   const pools = buildPools(seed, box, params)
+  const backruns = buildBackruns(seed, box, params)
   const lo = seededNoise2D(seed * 7 + 11)
   const hi = seededNoise2D(seed * 13 + 29)
 
@@ -243,6 +295,12 @@ export function renderVariantInterior(
         oB = oB * (1 - a) + pool.rgb[2] * a
         oA = oA * (1 - a) + a
       }
+      // Back-runs — light core + dark feathered ring on already-painted pigment.
+      if (backruns.length) {
+        for (const br of backruns) {
+          [oR, oG, oB] = applyBackrun(br, px, py, [oR, oG, oB], oA, lo, params.backruns)
+        }
+      }
       // Canopy-level ambient shade: darken toward the outer edge so the whole
       // symbol reads as a rounded volume, not a flat disc (value structure).
       const dc = Math.sqrt((px - box.cx) ** 2 + (py - box.cy) ** 2) / box.radius
@@ -252,6 +310,28 @@ export function renderVariantInterior(
     }
   }
   ctx.putImageData(img, 0, 0)
+
+  // Dried hard edge — a feathered dark stroke centred on the silhouette. The clip
+  // below keeps only its inner half, giving a soft dark rim where the wash dried.
+  if (params.driedEdge > 0) {
+    const dark = scaleRgb(hexToRgb(params.foliage), 0.4)
+    ctx.save()
+    ctx.strokeStyle = `rgb(${dark[0]|0},${dark[1]|0},${dark[2]|0})`
+    ctx.globalAlpha = params.driedEdge * 0.55
+    ctx.lineWidth = box.radius * 0.14
+    ctx.lineJoin = 'round'
+    ctx.shadowColor = ctx.strokeStyle as string
+    ctx.shadowBlur = box.radius * 0.08
+    for (const poly of polys) {
+      if (poly.length < 3) continue
+      ctx.beginPath()
+      ctx.moveTo(poly[0].x * k, poly[0].y * k)
+      for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x * k, poly[i].y * k)
+      ctx.closePath()
+      ctx.stroke()
+    }
+    ctx.restore()
+  }
 
   // Clip to the silhouette (RASTER → canvas space).
   ctx.globalCompositeOperation = 'destination-in'

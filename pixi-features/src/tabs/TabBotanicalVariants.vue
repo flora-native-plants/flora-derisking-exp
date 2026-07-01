@@ -39,6 +39,8 @@ const granulation      = ref(0.4)
 const boundaryWobble   = ref(0.5)
 const tonalDepth       = ref(0.55)
 const tempShift        = ref(0.35)
+const backruns         = ref(0.5)
+const driedEdge        = ref(0.5)
 const baseStrength     = ref(0.7)
 const softness         = ref(0.5)
 const bloomColor       = ref('#a07560')
@@ -76,6 +78,8 @@ function poolParams(): WatercolorPoolParams {
     softness: softness.value,
     tonalDepth: tonalDepth.value,
     tempShift: tempShift.value,
+    backruns: backruns.value,
+    driedEdge: driedEdge.value,
   }
 }
 
@@ -203,7 +207,7 @@ onUnmounted(() => { if (app.destroy) app.destroy(true, { children: true }) })
 watch([plantId, dilation], reloadAll)
 watch([
   variationStrength, poolCount, edgeDarkening, granulation, boundaryWobble,
-  tonalDepth, tempShift, baseStrength, softness, bloomColor, bloomStrength, bloomSize,
+  tonalDepth, tempShift, backruns, driedEdge, baseStrength, softness, bloomColor, bloomStrength, bloomSize,
   contourOn, contourWidth, contourWobble, contourAlpha, VARIANT_COUNT,
 ], scheduleRebuild)
 </script>
@@ -229,6 +233,8 @@ watch([
       <label>edge dark <input type="range" min="0" max="1" step="0.05" v-model.number="edgeDarkening" /> {{ edgeDarkening.toFixed(2) }}</label>
       <label>tonal depth <input type="range" min="0" max="1" step="0.05" v-model.number="tonalDepth" /> {{ tonalDepth.toFixed(2) }}</label>
       <label>temp split <input type="range" min="0" max="1" step="0.05" v-model.number="tempShift" /> {{ tempShift.toFixed(2) }}</label>
+      <label>back-runs <input type="range" min="0" max="1" step="0.05" v-model.number="backruns" /> {{ backruns.toFixed(2) }}</label>
+      <label>dried edge <input type="range" min="0" max="1" step="0.05" v-model.number="driedEdge" /> {{ driedEdge.toFixed(2) }}</label>
       <label>granulation <input type="range" min="0" max="1" step="0.05" v-model.number="granulation" /> {{ granulation.toFixed(2) }}</label>
       <label>boundary <input type="range" min="0" max="1" step="0.05" v-model.number="boundaryWobble" /> {{ boundaryWobble.toFixed(2) }}</label>
 
