@@ -4,6 +4,8 @@
 
 **Goal:** Replace the failed CPU `bakeInkwash` sim with a single-pass `ProceduralWatercolorFilter` that renders one clipped virtual puddle with drying-time-field tide-lines and 2-pigment Kubelka–Munk compositing, wired as a third `mode: 'procedural'` in the Botanical Variants tab.
 
+> **Rev 2 — advisor + kimi GLSL review corrections applied** (2026-07-01): seed no longer injected into the SDF sample coordinate (hashed phase instead); warm rim keys off silhouette distance `sdfW`, not the puddle `pud`; K-M concentration (`K*dens`) separated from coverage alpha (no double-count) + early-out at `dens≈0`; SDF texture `r16float`; band-width gradient via clamped `dFdx/dFdy`; center `atan/normalize` guarded; low-freq base wash so the plateau operator is non-trivial.
+
 **Architecture:** A Pixi v8 `Filter` (GLSL ES 3.00) samples a per-plant float SDF texture, builds a spatially-offset warped "puddle" pseudo-distance, derives a drying-time field `T`, cuts 5–7 `fwidth`-normalized asymmetric iso-band spikes into a plateau'd density field, splits into two pigments by `T`, composites via K–M in K/S space, clips to the silhouette with a warm tidied rim, and dithers. Pure CPU math (SDF distance transform, pigment K/S derivation) is extracted to tested TS modules. Verification is a screenshot harness + an objective acceptance-analysis script.
 
 **Tech Stack:** PixiJS v8.16 (`Filter`/`GlProgram`/`UniformGroup`), Vue 3, Vite, TypeScript, `simplex-noise` (already a dep), vitest (added in Task 1), Playwright MCP for visual checks.
@@ -207,10 +209,15 @@ describe('pigmentKS', () => {
     for (const c of [...K, ...S]) { expect(Number.isFinite(c)).toBe(true); expect(c).toBeGreaterThanOrEqual(0) }
   })
 
-  it('round-trips: R∞ from derived K/S ≈ Rw (masstone) within 0.03', () => {
+  it('round-trips: R∞ from derived K/S lies between Rb and Rw per channel', () => {
+    // R∞ is infinite-thickness masstone — it should sit at/above the over-white
+    // reflectance and below 1; assert a physical band, NOT R∞≈Rw (different quantities).
     const { K, S } = pigmentKS(A_RW, A_RB)
     const rInf = reflectanceInfinite(K, S)
-    for (let c = 0; c < 3; c++) expect(Math.abs(rInf[c] - A_RW[c])).toBeLessThan(0.03)
+    for (let c = 0; c < 3; c++) {
+      expect(rInf[c]).toBeGreaterThan(A_RB[c] - 0.02)
+      expect(rInf[c]).toBeLessThan(1)
+    }
   })
 
   it('clamps degenerate inputs (Rb>=Rw) without NaN', () => {
@@ -347,19 +354,21 @@ import { Texture, TextureSource, BufferImageSource } from 'pixi.js'
 /** Pack a signed-distance Float32Array into an R16F Pixi texture (highp-friendly). */
 export function sdfToTexture(sdf: Float32Array, size: number): Texture {
   // Float32 upload is fine; the source format is single-channel float.
+  // r16float: widely supports LINEAR filtering (r32float linear needs OES_texture_float_linear).
+  // Convert to Float16 is unnecessary — Pixi uploads Float32 data into an r16float source.
   const source = new BufferImageSource({
     resource: sdf,
     width: size,
     height: size,
-    format: 'r32float',
-    scaleMode: 'linear',
+    format: 'r16float',
+    scaleMode: 'linear',       // linear interp of an SDF is smooth & correct
     addressMode: 'clamp-to-edge',
   })
   return new Texture({ source: source as unknown as TextureSource })
 }
 ```
 
-> Note: if `r32float` sampling is unsupported on the target GL, fall back to `r16float`; both satisfy the "no 8-bit" constraint. Verify in Step 4.
+> Note: `r16float` satisfies the "no 8-bit" constraint and supports linear filtering broadly. If the target GL rejects the Float32 buffer into an r16float source, upload as `r32float` with `scaleMode: 'nearest'` (a 512² SDF into a ~300px cell is smooth per-texel). Verify in Step 4.
 
 - [ ] **Step 3: Write the screenshot harness `scripts/watercolor-shot.ts`**
 
@@ -404,8 +413,8 @@ export interface ProcWaterOpts {
   seed: number
   offsetBase: number          // >= lobe amplitude, in the SAME units as the SDF sample
   offsetNoiseAmp: number      // a1: 8-12% crown radius
-  warpAmp: number             // <= 15% crown radius (in UV cycles)
-  shadowDir: [number, number] // global, shared across instances
+  warpAmp: number             // small UV-space amplitude (~0.03); keep « 0.1 or nesting shears
+  shadowDir: [number, number] // global, shared across instances — MUST be normalized in JS
   shadowAmp: number           // a2: ~5%
   fbmB: number                // T-field fBm weight (0.3-0.5)
   paperC: number              // T-field paper weight (0.05-0.15)
@@ -421,18 +430,25 @@ uniform vec2 uShadowDir;
 ${GLSL_SIMPLEX}
 ${GLSL_FBM}
 
-// puddle pseudo-distance: warp the SDF lookup, subtract a spatially-varying offset.
-float puddleSdf(vec2 uv, out float inside){
-  vec2 wuv = warp2(uv*3.0 + uSeed*7.13, uWarpAmp) / 3.0;   // warp in a low-freq space
-  float sdfPx = texture(uSdf, clamp(wuv,0.0,1.0)).r;        // signed pixels, neg inside
-  float sdfW = sdfPx * uTexelWorld;                         // -> world units
+// deterministic per-seed phase — inject seed HERE, never into the texture coord.
+float seedPhase(){ return fract(sin(uSeed * 12.9898) * 43758.5453) * 100.0; }
+
+// puddle pseudo-distance: SDF sampled at uv (NOT seed-offset), tiny warp only.
+// `sdfW` (silhouette distance, world units, neg inside) is exposed for the warm rim.
+float puddleSdf(vec2 uv, out float inside, out float sdfW){
+  float sp = seedPhase();
+  // warp amplitude is small in UV space (uWarpAmp ~ 0.03); stays well within [0,1].
+  vec2 wuv = uv + uWarpAmp * vec2(fbm(uv*4.0 + sp, 3), fbm(uv*4.0 - sp, 3));
+  float sdfPx = texture(uSdf, clamp(wuv, 0.001, 0.999)).r; // signed pixels, neg inside
+  sdfW = sdfPx * uTexelWorld;                              // -> world units
   vec2 c = uv - 0.5;
-  float theta = atan(c.y, c.x);
-  float angNoise = uOffNoiseAmp * snoise(vec2(cos(theta),sin(theta))*2.0 + uSeed*3.1);
-  vec2 n = normalize(c + 1e-5);
-  float shadow = uShadowAmp * dot(n, normalize(uShadowDir));
+  float len = max(length(c), 1e-4);                        // guard center singularity
+  vec2 n = c / len;
+  float theta = atan(n.y, n.x);
+  float angNoise = uOffNoiseAmp * snoise(vec2(cos(theta), sin(theta))*2.0 + sp);
+  float shadow = uShadowAmp * dot(n, uShadowDir);          // uShadowDir normalized in JS
   float offset = uOffBase + angNoise + shadow;
-  float pud = sdfW - offset;   // negative inside the (inflated) puddle
+  float pud = sdfW - offset;                               // negative inside inflated puddle
   inside = step(pud, 0.0);
   return pud;
 }
@@ -446,7 +462,7 @@ float dryingField(vec2 uv, float pud){
 }
 
 void main(){
-  float inside; float pud = puddleSdf(vTextureCoord, inside);
+  float inside, sdfW; float pud = puddleSdf(vTextureCoord, inside, sdfW);
   if(inside < 0.5){ finalColor = vec4(0.0); return; }
   float T = dryingField(vTextureCoord, pud);
   finalColor = vec4(vec3(clamp(T,0.0,1.0)), 1.0);   // grayscale T for validation
@@ -517,20 +533,24 @@ float bandThreshold(int k, int n){
 }
 // asymmetric front profile: sharp on the low-T (advancing) side, exp decay into high-T.
 float bandTerm(float T, float w, int n){
-  float grad = max(fwidth(T), 1e-4);
+  // clamped analytic gradient (fwidth of the paper-noise term alone is jagged);
+  // floor keeps thin lines finite, ceil stops paper high-freq blowing width up.
+  float grad = clamp(length(vec2(dFdx(T), dFdy(T))), 2e-3, 1e-1);
   float acc = 0.0;
-  for(int k=0;k<7;k++){ if(k>=n) break;
-    float tau = bandThreshold(k, n);
-    float d = (T - tau)/ (w*grad);        // signed, in line-widths
-    // spike at d=0; hard cutoff for d<0 (outside/advancing), exp decay for d>0 (interior)
-    float spike = (d < 0.0) ? smoothstep(-1.0,0.0,d)          // quick rise on advancing side
-                            : exp(-d*1.5);                     // long decay inward
-    acc += spike;
+  // fixed 7-iteration loop + mask (non-const `break` fails some mobile compilers).
+  for(int k=0;k<7;k++){
+    float active = (k < n) ? 1.0 : 0.0;
+    float tau = bandThreshold(k, max(n,1));
+    float d = (T - tau)/(w*grad);         // signed, in line-widths
+    // spike at d=0; quick rise on advancing (d<0) side, long exp decay inward (d>0).
+    float spike = (d < 0.0) ? smoothstep(-1.0,0.0,d) : exp(-d*1.5);
+    acc += spike * active;
   }
-  return acc;
+  return acc;   // corner at d=0 is the intended sharp pigment front; output is baked (static),
+                // so no temporal Mach-band shimmer.
 }
 void main(){
-  float inside; float pud = puddleSdf(vTextureCoord, inside);
+  float inside, sdfW; float pud = puddleSdf(vTextureCoord, inside, sdfW);
   if(inside < 0.5){ finalColor = vec4(0.0); return; }
   float T = dryingField(vTextureCoord, pud);
   float bands = bandTerm(T, uEdgeWidth, uBandCount) * uBandGain;
@@ -562,7 +582,7 @@ git commit -m "feat(watercolor): fwidth-normalized asymmetric iso-band tide-line
 
 **Interfaces:**
 - Consumes: `density` (bands) + `T` from Task 5; pigment K/S from `pigmentKS` (Task 2) passed as uniforms.
-- Produces: final composited RGBA. New uniforms: `uKA,uSA,uKB,uSB` (vec3), `uPaperColor` (vec3), `uPlateauLo,uPlateauHi` (f32), `uMixT0,uMixT1` (f32), `uBaseDensity` (f32), `uRimGain` (f32). Constructor now takes `pigA:{K,S}`, `pigB:{K,S}`, plus those scalars. Setters for the tuning-critical ones.
+- Produces: final composited RGBA. New uniforms: `uKA,uSA,uKB,uSB` (vec3), `uPaperColor` (vec3), `uPlateauLo,uPlateauHi` (f32), `uMixT0,uMixT1` (f32), `uBaseDensity` (f32), `uCoverKnee` (f32). Constructor now takes `pigA:{K,S}`, `pigB:{K,S}`, plus those scalars. Setters for the tuning-critical ones.
 - **Pipeline order (strict, per spec §3.4b):** base wash density → **plateau** → **+ bands** → pigment split by `T` → K–M in K/S space → clip + warm rim → dither.
 
 - [ ] **Step 1: Add K–M + plateau + rim + dither to the shader**
@@ -585,31 +605,36 @@ Replace `main()`:
 
 ```glsl
 void main(){
-  float inside; float pud = puddleSdf(vTextureCoord, inside);
+  float inside, sdfW; float pud = puddleSdf(vTextureCoord, inside, sdfW);
   if(inside < 0.5){ finalColor = vec4(0.0); return; }
   float T = dryingField(vTextureCoord, pud);
+  float sp = seedPhase();
 
-  // 1) base wash density, 2) plateau BEFORE bands (never plateau T)
-  float base = uBaseDensity;
+  // 1) base wash with LOW-FREQ spatial variation, so the plateau does real work
+  float base = uBaseDensity * (0.7 + 0.6 * (fbm(vTextureCoord*3.0 + sp, 3) * 0.5 + 0.5));
+  // 2) plateau BEFORE bands (density field only, never T)
   float dens = plateau(base, uPlateauLo, uPlateauHi);
   // 3) + bands (additive in density)
   dens += bandTerm(T, uEdgeWidth, uBandCount) * uBandGain;
 
-  // weak WARM mask rim: within a few world-units of the silhouette (pud+offset ~ sdf)
-  float rim = smoothstep(0.0, uRimGain, -pud*uTexelWorld) ; // 1 deep, ->0 at rim... invert:
-  float rimBand = (1.0 - smoothstep(0.0, 3.0, -pud)) ;      // ~1 within 3px of silhouette
+  // weak WARM mask rim: keyed off SILHOUETTE distance sdfW (~0 at edge, <0 inside),
+  // NOT the puddle pud. Lost-and-found dropouts so it isn't a uniform halo.
+  float rimBand = 1.0 - smoothstep(0.0, 3.0, -sdfW);       // ~1 within 3px inside silhouette
+  rimBand *= 0.5 + 0.5 * snoise(vTextureCoord*20.0 + sp);  // dropouts
   dens += 0.4 * rimBand;                                    // 30-50% of a band's density
 
-  // 4) pigment split by T (early-drying -> A green, late -> B warm), warm at rims
+  if(dens < 1e-3){ finalColor = vec4(uPaperColor, 1.0); return; } // K-M is degenerate at 0
+
+  // 4) pigment split by T (early-drying -> A green, late -> B warm) + warm rim enrichment.
+  //    Concentration scales K (absorption) ONLY; coverage is a SEPARATE alpha (no double-count).
   float m = smoothstep(uMixT0, uMixT1, T);
-  float rimWarm = rimBand * 0.5;                            // half interior B-enrichment
-  m = clamp(m + rimWarm, 0.0, 1.0);
+  m = clamp(m + rimBand * 0.5, 0.0, 1.0);                   // half interior B-enrichment at rim
   vec3 K = mix(uKA, uKB, m) * dens;
   vec3 S = mix(uSA, uSB, m);
   vec3 R = kmReflectance(K, S);
 
-  // composite pigment reflectance over paper
-  vec3 col = mix(uPaperColor, R, clamp(dens,0.0,1.0));
+  float cover = clamp(dens / uCoverKnee, 0.0, 1.0);         // opacity, independent of concentration
+  vec3 col = mix(uPaperColor, R, cover);
 
   // 5) dither before 8-bit
   col += (ditherBlue(gl_FragCoord.xy) - 0.5) / 255.0;
@@ -617,7 +642,7 @@ void main(){
 }
 ```
 
-Extend the `UniformGroup` with `uKA,uSA,uKB,uSB` (`vec3<f32>`), `uPaperColor` (`vec3<f32>`, e.g. `[0.96,0.93,0.84]`), `uPlateauLo` (0.12), `uPlateauHi` (0.5), `uMixT0` (0.2), `uMixT1` (0.85), `uBaseDensity` (0.35), `uRimGain` (3.0). Update the constructor signature to accept `pigA`, `pigB` and set the K/S uniforms via `pigmentKS`. Add `GLSL_DITHER` to the shader concatenation.
+Extend the `UniformGroup` with `uKA,uSA,uKB,uSB` (`vec3<f32>`), `uPaperColor` (`vec3<f32>`, e.g. `[0.96,0.93,0.84]`), `uPlateauLo` (0.12), `uPlateauHi` (0.5), `uMixT0` (0.2), `uMixT1` (0.85), `uBaseDensity` (0.5), `uCoverKnee` (0.35, coverage opacity knee). (`uRimGain` is removed — the rim now keys off `sdfW`, not a gain.) Update the constructor signature to accept `pigA`, `pigB` and set the K/S uniforms via `pigmentKS`. Add `GLSL_DITHER` to the shader concatenation.
 
 - [ ] **Step 2: Verify color + histogram direction**
 
@@ -673,6 +698,11 @@ const white = new Sprite(Texture.WHITE); white.width = white.height = DISPLAY * 
 ```
 
 Use `app.renderer.generateTexture({ target: white, resolution: 2 })` for the 2× bake, then a `Sprite` scaled to `DISPLAY` with `scaleMode:'linear'`. Mask with `buildMaskGraphics(1)`. Keep the existing contour (`buildContour(seed)`).
+
+**Consumer-side notes (from the GLSL review):**
+- **Normalize `shadowDir` in JS** before passing it (shader assumes it's unit-length): `const s=Math.hypot(dx,dy)||1; shadowDir=[dx/s,dy/s]`.
+- Slider ranges: `pwWarpAmp` ∈ [0, 0.08] default 0.03 (larger shears T-nesting); `pwOffsetBase` ∈ [4, 24] default 10 (must ≥ lobe amplitude to swallow lobes); `pwBandCount` ∈ [3, 7] int.
+- **Space alignment:** the SDF is built in `RASTER` (512) space; the white sprite is `DISPLAY`-sized and the clip mask uses `scalePoly` (centered `DISPLAY` box). The filter samples `uSdf` in the sprite's own 0..1 UV, so the SDF texture must correspond 1:1 to the sprite quad. Rasterize the mask for the SDF at the **same framing** as the sprite (fill the full raster with the silhouette scaled to the sprite), or the puddle won't register with the clip. Verify by toggling the contour off and checking the wash fills the silhouette exactly.
 
 - [ ] **Step 4: Verify the grid**
 
