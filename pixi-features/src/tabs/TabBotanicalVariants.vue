@@ -313,6 +313,9 @@ function rebuild() {
         shadowAmp: pwShadowAmp.value,
         fbmB: pwFbmB.value,
         paperC: pwPaperC.value,
+        bandCount: 6,
+        edgeWidth: 1.2,
+        bandGain: 0.6,
       })
       const white = markRaw(new Sprite(Texture.WHITE))
       white.anchor.set(0.5)

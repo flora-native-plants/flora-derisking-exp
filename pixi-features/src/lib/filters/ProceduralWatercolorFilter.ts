@@ -13,15 +13,19 @@ export interface ProcWaterOpts {
   shadowAmp: number           // a2: ~5%
   fbmB: number                // T-field fBm weight (0.3-0.5)
   paperC: number              // T-field paper weight (0.05-0.15)
+  bandCount?: number          // number of iso-bands (default 6)
+  edgeWidth?: number          // band edge width multiplier (default 1.2)
+  bandGain?: number           // band density gain (default 0.6)
 }
 
-const FRAG = /* glsl */`
+const FRAG = /* glsl */`#version 300 es
 precision highp float;
 in vec2 vTextureCoord;
 out vec4 finalColor;
 uniform sampler2D uSdf;
 uniform float uTexelWorld, uSeed, uOffBase, uOffNoiseAmp, uWarpAmp, uShadowAmp, uFbmB, uPaperC;
 uniform vec2 uShadowDir;
+uniform float uBandCount, uEdgeWidth, uBandGain;
 ${GLSL_SIMPLEX}
 ${GLSL_FBM}
 
@@ -56,11 +60,36 @@ float dryingField(vec2 uv, float pud){
   return sdfN + fb + paper;                            // T
 }
 
+// non-uniform thresholds tightening toward the rim (T small = near rim)
+float bandThreshold(int k, int n){
+  float f = float(k+1)/float(n+1);      // 0..1
+  return pow(f, 1.6);                    // tighter near rim (small T)
+}
+// asymmetric front profile: sharp on the low-T (advancing) side, exp decay into high-T.
+float bandTerm(float T, float w, int n){
+  // clamped analytic gradient (fwidth of the paper-noise term alone is jagged);
+  // floor keeps thin lines finite, ceil stops paper high-freq blowing width up.
+  float grad = clamp(length(vec2(dFdx(T), dFdy(T))), 2e-3, 1e-1);
+  float acc = 0.0;
+  // fixed 7-iteration loop + mask (non-const \`break\` fails some mobile compilers).
+  for(int k=0;k<7;k++){
+    float inRange = (k < n) ? 1.0 : 0.0;
+    float tau = bandThreshold(k, max(n,1));
+    float d = (T - tau)/(w*grad);         // signed, in line-widths
+    // spike at d=0; quick rise on advancing (d<0) side, long exp decay inward (d>0).
+    float spike = (d < 0.0) ? smoothstep(-1.0,0.0,d) : exp(-d*1.5);
+    acc += spike * inRange;
+  }
+  return acc;   // corner at d=0 is the intended sharp pigment front; output is baked (static),
+                // so no temporal Mach-band shimmer.
+}
 void main(){
   float inside, sdfW; float pud = puddleSdf(vTextureCoord, inside, sdfW);
   if(inside < 0.5){ finalColor = vec4(0.0); return; }
   float T = dryingField(vTextureCoord, pud);
-  finalColor = vec4(vec3(clamp(T,0.0,1.0)), 1.0);   // grayscale T for validation
+  float bands = bandTerm(T, uEdgeWidth, int(uBandCount)) * uBandGain;
+  float density = bands;                       // base wash added in Task 6
+  finalColor = vec4(vec3(clamp(1.0 - density,0.0,1.0)), 1.0); // dark = pigment
 }`
 
 export class ProceduralWatercolorFilter extends Filter {
@@ -76,6 +105,9 @@ export class ProceduralWatercolorFilter extends Filter {
       uShadowAmp:   { value: o.shadowAmp,                   type: 'f32' },
       uFbmB:        { value: o.fbmB,                        type: 'f32' },
       uPaperC:      { value: o.paperC,                      type: 'f32' },
+      uBandCount:   { value: o.bandCount  ?? 6,             type: 'f32' },
+      uEdgeWidth:   { value: o.edgeWidth  ?? 1.2,           type: 'f32' },
+      uBandGain:    { value: o.bandGain   ?? 0.6,           type: 'f32' },
     })
     super({
       glProgram: GlProgram.from({ vertex: defaultFilterVert, fragment: FRAG }),
@@ -83,7 +115,10 @@ export class ProceduralWatercolorFilter extends Filter {
     })
     this.g = g
   }
-  setSeed(v: number) { this.g.uniforms.uSeed = v }
-  setFbmB(v: number) { this.g.uniforms.uFbmB = v }
-  setPaperC(v: number) { this.g.uniforms.uPaperC = v }
+  setSeed(v: number)       { this.g.uniforms.uSeed       = v }
+  setFbmB(v: number)       { this.g.uniforms.uFbmB       = v }
+  setPaperC(v: number)     { this.g.uniforms.uPaperC     = v }
+  setBandCount(v: number)  { this.g.uniforms.uBandCount  = v }
+  setEdgeWidth(v: number)  { this.g.uniforms.uEdgeWidth  = v }
+  setBandGain(v: number)   { this.g.uniforms.uBandGain   = v }
 }
