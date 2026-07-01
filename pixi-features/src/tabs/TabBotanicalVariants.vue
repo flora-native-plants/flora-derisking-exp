@@ -71,12 +71,29 @@ const contourWidth  = ref(2.5)
 const contourWobble = ref(2.5)
 const contourAlpha  = ref(0.9)
 
-// procedural watercolor controls (Task 4 temp wiring)
-const pwOffsetBase    = ref(10)
-const pwWarpAmp       = ref(0.03)
-const pwFbmB          = ref(0.4)
-const pwPaperC        = ref(0.08)
-const pwShadowAmp     = ref(0.05)
+// ── procedural watercolor controls (Task 7) ──────────────────────────────────
+const pwOffsetBase    = ref(8)      // puddle offset base (display units); default 8
+const pwWarpAmp       = ref(0.03)   // UV warp amplitude [0, 0.08]
+const pwFbmB          = ref(0.4)    // T-field fBm weight [0, 0.6]
+const pwPaperC        = ref(0.08)   // T-field paper weight [0, 0.2]
+const pwBandCount     = ref(6)      // iso-band count [3, 7]
+const pwEdgeWidth     = ref(1.2)    // band edge width multiplier [0.4, 3]
+const pwBandGain      = ref(0.6)    // band density gain [0, 1.5]
+const pwPlateauLo     = ref(0.12)   // plateau low threshold [0, 0.5]
+const pwPlateauHi     = ref(0.5)    // plateau high threshold [0.2, 0.9]
+const pwMixT0         = ref(0.2)    // pigment A→B mix start [0, 1]
+const pwMixT1         = ref(0.85)   // pigment A→B mix end [0.2, 1.2]
+const pwBaseDensity   = ref(0.5)    // base wash density [0.1, 1]
+const pwCoverKnee     = ref(0.35)   // coverage opacity knee [0.1, 1]
+const pwShadowDX      = ref(0.6)    // shadow direction X (normalized in JS) [-1, 1]
+const pwShadowDY      = ref(-0.4)   // shadow direction Y (normalized in JS) [-1, 1]
+const pwShadowAmp     = ref(0.05)   // shadow amplitude [0, 0.2]
+
+// ── SDF cache: keyed by plantId:dilation, rebuilt only on silhouette changes ──
+type SdfEntry = { sdfTex: ReturnType<typeof sdfToTexture>; texelWorld: number }
+let sdfCacheMap = new Map<string, SdfEntry>()
+// Baked RenderTextures from the previous rebuild — freed at the start of the next.
+let bakedTexturesToDestroy: ReturnType<typeof sdfToTexture>[] = []
 
 let app = markRaw({} as Application)
 let grid = markRaw({} as Container)
@@ -114,6 +131,9 @@ function rngFor(seed: number): () => number {
 async function ensurePlantData() {
   const key = `${plantId.value}:${dilation.value}`
   if (key === cachedKey && silhouettePolys.length) return
+  // Silhouette changed — clear the SDF cache so we don't reuse stale textures.
+  for (const e of sdfCacheMap.values()) e.sdfTex.destroy(true)
+  sdfCacheMap.clear()
   status.value = `Fetching plant ${plantId.value}…`
   const svg = await fetchPlantSvg(plantId.value)
   status.value = 'Extracting silhouette…'
@@ -271,8 +291,27 @@ function layoutCell(index: number, cell: number): { x: number; y: number } {
   return { x: col * cell + cell / 2, y: row * cell + cell / 2 }
 }
 
+/** Get or build the per-plant SDF entry (cached by plantId:dilation). */
+function getOrBuildSdf(): SdfEntry {
+  const key = `${plantId.value}:${dilation.value}`
+  let entry = sdfCacheMap.get(key)
+  if (!entry) {
+    const mask = silhouetteMask(silhouettePolys, RASTER, RASTER)
+    const sdf = computeMaskSdf(mask, RASTER)
+    const sdfTex = sdfToTexture(sdf, RASTER)
+    entry = { sdfTex, texelWorld: DISPLAY / RASTER }
+    sdfCacheMap.set(key, entry)
+  }
+  return entry
+}
+
 function rebuild() {
   if (!app.stage || !silhouettePolys.length || !washTex.source) return
+
+  // Free baked RenderTextures from the previous procedural rebuild.
+  for (const t of bakedTexturesToDestroy) t.destroy(true)
+  bakedTexturesToDestroy = []
+
   grid.removeChildren().forEach(c => c.destroy({ children: true }))
 
   const n = VARIANT_COUNT.value
@@ -280,60 +319,83 @@ function rebuild() {
   const cell = Math.min(app.screen.width / GRID_COLS, app.screen.height / rows)
   const inner = cell * 0.86
   const foliage = hexToLinear(currentColor())
-  const cool: [number, number, number] = [foliage[0] * 0.7, foliage[1] * 0.72, foliage[2] * 0.66] // darker/cooler
+  const cool: [number, number, number] = [foliage[0] * 0.7, foliage[1] * 0.72, foliage[2] * 0.66]
   const t0 = performance.now()
 
-  // For procedural mode: build the SDF ONCE (shared silhouette across all seeds).
-  // Rasterize mask at RASTER×RASTER using poly coords in [0..RASTER] space (1:1).
-  // sdfTexelWorldSize converts SDF pixels → display-world pixels.
-  let procSdfTex: ReturnType<typeof sdfToTexture> | null = null
-  const procTexelWorld = DISPLAY / RASTER
-  if (mode.value === 'procedural') {
-    const mask = silhouetteMask(silhouettePolys, RASTER, RASTER)
-    const sdf = computeMaskSdf(mask, RASTER)
-    procSdfTex = sdfToTexture(sdf, RASTER)
-  }
+  // Pre-build pigment K/S pairs once (same for all seeds in one rebuild).
+  const pigA = pigmentKS([0.35, 0.62, 0.48], [0.06, 0.20, 0.13])
+  const pigB = pigmentKS([0.80, 0.56, 0.24], [0.26, 0.13, 0.05])
 
-  // Normalize shadow direction so the shader receives a unit vector.
-  const shadowDX = 0.7071, shadowDY = 0.7071
-  const shadowDir: [number, number] = [shadowDX, shadowDY]
+  // Normalize shadow direction in JS before passing to the shader (must be unit-length).
+  const sdx = pwShadowDX.value, sdy = pwShadowDY.value
+  const sdLen = Math.hypot(sdx, sdy) || 1
+  const shadowDir: [number, number] = [sdx / sdLen, sdy / sdLen]
 
   const ink = mode.value === 'sim' ? inkwashParams() : null
   for (let seed = 0; seed < n; seed++) {
     const cellRoot = markRaw(new Container())
-    if (mode.value === 'procedural' && procSdfTex) {
-      // Procedural watercolor: white Sprite with drying-time-field filter + clip mask.
+
+    if (mode.value === 'procedural') {
+      // Per-plant SDF: built once per plantId:dilation, reused across all seeds.
+      const { sdfTex, texelWorld } = getOrBuildSdf()
+
+      // One filter per seed (different seed → different drying-field phase).
+      // Do NOT destroy the filter after baking — it shares sdfTex.source via
+      // the UniformGroup resource, so destroying it would kill the shared SDF.
       const filter = new ProceduralWatercolorFilter({
-        sdf: procSdfTex,
-        sdfTexelWorldSize: procTexelWorld,
+        sdf: sdfTex,
+        sdfTexelWorldSize: texelWorld,
         seed,
         offsetBase: pwOffsetBase.value,
-        offsetNoiseAmp: pwOffsetBase.value * 0.12,
+        offsetNoiseAmp: pwOffsetBase.value * 0.35,  // 35% of offset base
         warpAmp: pwWarpAmp.value,
         shadowDir,
         shadowAmp: pwShadowAmp.value,
         fbmB: pwFbmB.value,
         paperC: pwPaperC.value,
-        bandCount: 6,
-        edgeWidth: 1.2,
-        bandGain: 0.6,
-        pigA: pigmentKS([0.35, 0.62, 0.48], [0.06, 0.20, 0.13]),
-        pigB: pigmentKS([0.80, 0.56, 0.24], [0.26, 0.13, 0.05]),
-        plateauLo: 0.12,
-        plateauHi: 0.5,
-        mixT0: 0.2,
-        mixT1: 0.85,
-        baseDensity: 0.5,
-        coverKnee: 0.35,
+        pigA,
+        pigB,
+        bandCount: pwBandCount.value,
+        edgeWidth: pwEdgeWidth.value,
+        bandGain: pwBandGain.value,
+        plateauLo: pwPlateauLo.value,
+        plateauHi: pwPlateauHi.value,
+        mixT0: pwMixT0.value,
+        mixT1: pwMixT1.value,
+        baseDensity: pwBaseDensity.value,
+        coverKnee: pwCoverKnee.value,
       })
-      const white = markRaw(new Sprite(Texture.WHITE))
+
+      // 2× bake: render a DISPLAY*2 white sprite with the filter to a 2× texture,
+      // then wrap in a Sprite scaled to DISPLAY. This gives 4× physical pixels
+      // shown at 1× = a clean 2× supersampled bake.
+      const white = new Sprite(Texture.WHITE)
       white.anchor.set(0.5)
-      white.width = white.height = DISPLAY
+      white.width = DISPLAY * 2
+      white.height = DISPLAY * 2
       white.filters = [filter]
+
+      const bakedTex = app.renderer.generateTexture({
+        target: white,
+        resolution: 2,
+        textureSourceOptions: { scaleMode: 'linear' },
+      })
+      // Track for destruction at the top of the next rebuild.
+      bakedTexturesToDestroy.push(bakedTex)
+
+      // white.destroy() with NO options — never {texture:true} (would kill Texture.WHITE).
+      white.destroy()
+
+      const bakedSprite = markRaw(new Sprite(bakedTex))
+      bakedSprite.anchor.set(0.5)
+      bakedSprite.width = DISPLAY
+      bakedSprite.height = DISPLAY
+
       const clipMask = buildMaskGraphics(1)
       cellRoot.addChild(clipMask)
-      cellRoot.addChild(white)
-      white.mask = clipMask
+      cellRoot.addChild(bakedSprite)
+      bakedSprite.mask = clipMask
+
     } else if (ink) {
       // Baked mini-inkwash: one Sprite from the fluid-sim canvas + contour.
       const simCanvas = bakeInkwash(silhouettePolys, seed, SIM_SIZE, RASTER, ink)
@@ -348,6 +410,7 @@ function rebuild() {
       if (bloom) cellRoot.addChild(bloom)
       if (grainOn.value) cellRoot.addChild(buildGrainLayer())
     }
+
     if (contourOn.value) cellRoot.addChild(buildContour(seed))
     cellRoot.scale.set(inner / DISPLAY)
 
@@ -413,7 +476,14 @@ onMounted(async () => {
   resetView()
 })
 
-onUnmounted(() => { if (app.destroy) app.destroy(true, { children: true }) })
+onUnmounted(() => {
+  // Destroy cached SDF textures.
+  for (const e of sdfCacheMap.values()) e.sdfTex.destroy(true)
+  sdfCacheMap.clear()
+  for (const t of bakedTexturesToDestroy) t.destroy(true)
+  bakedTexturesToDestroy = []
+  if (app.destroy) app.destroy(true, { children: true })
+})
 
 watch([plantId, dilation], reloadAll)
 watch([
@@ -421,7 +491,13 @@ watch([
   bloomColor, bloomStrength, bloomSize, bloomSoftness,
   grainOn, grainStrength, contourOn, contourWidth, contourWobble, contourAlpha, VARIANT_COUNT,
   simDrops, simWetness, simBleed, simIterations, simEdge, simGranule, simStrength, simPaper,
-  pwOffsetBase, pwWarpAmp, pwFbmB, pwPaperC, pwShadowAmp,
+  // procedural controls
+  pwOffsetBase, pwWarpAmp, pwFbmB, pwPaperC,
+  pwBandCount, pwEdgeWidth, pwBandGain,
+  pwPlateauLo, pwPlateauHi,
+  pwMixT0, pwMixT1,
+  pwBaseDensity, pwCoverKnee,
+  pwShadowDX, pwShadowDY, pwShadowAmp,
 ], scheduleRebuild)
 </script>
 
@@ -462,11 +538,26 @@ watch([
       </template>
 
       <template v-else-if="mode === 'procedural'">
-        <div class="group">procedural watercolor (T-field preview)</div>
-        <label>offset base <input type="range" min="4" max="24" step="1" v-model.number="pwOffsetBase" /> {{ pwOffsetBase }}</label>
+        <div class="group">procedural watercolor — puddle / warp</div>
+        <label>offset base <input type="range" min="2" max="24" step="1" v-model.number="pwOffsetBase" /> {{ pwOffsetBase }}</label>
         <label>warp amp <input type="range" min="0" max="0.08" step="0.005" v-model.number="pwWarpAmp" /> {{ pwWarpAmp.toFixed(3) }}</label>
-        <label>fBm weight <input type="range" min="0" max="0.8" step="0.05" v-model.number="pwFbmB" /> {{ pwFbmB.toFixed(2) }}</label>
-        <label>paper weight <input type="range" min="0" max="0.3" step="0.01" v-model.number="pwPaperC" /> {{ pwPaperC.toFixed(2) }}</label>
+        <label>fBm weight <input type="range" min="0" max="0.6" step="0.02" v-model.number="pwFbmB" /> {{ pwFbmB.toFixed(2) }}</label>
+        <label>paper weight <input type="range" min="0" max="0.2" step="0.01" v-model.number="pwPaperC" /> {{ pwPaperC.toFixed(2) }}</label>
+        <div class="group">bands</div>
+        <label>band count <input type="range" min="3" max="7" step="1" v-model.number="pwBandCount" /> {{ pwBandCount }}</label>
+        <label>edge width <input type="range" min="0.4" max="3" step="0.1" v-model.number="pwEdgeWidth" /> {{ pwEdgeWidth.toFixed(1) }}</label>
+        <label>band gain <input type="range" min="0" max="1.5" step="0.05" v-model.number="pwBandGain" /> {{ pwBandGain.toFixed(2) }}</label>
+        <div class="group">density / plateau</div>
+        <label>base density <input type="range" min="0.1" max="1" step="0.05" v-model.number="pwBaseDensity" /> {{ pwBaseDensity.toFixed(2) }}</label>
+        <label>plateau lo <input type="range" min="0" max="0.5" step="0.02" v-model.number="pwPlateauLo" /> {{ pwPlateauLo.toFixed(2) }}</label>
+        <label>plateau hi <input type="range" min="0.2" max="0.9" step="0.02" v-model.number="pwPlateauHi" /> {{ pwPlateauHi.toFixed(2) }}</label>
+        <label>cover knee <input type="range" min="0.1" max="1" step="0.05" v-model.number="pwCoverKnee" /> {{ pwCoverKnee.toFixed(2) }}</label>
+        <div class="group">pigment mix</div>
+        <label>mix T0 <input type="range" min="0" max="1" step="0.02" v-model.number="pwMixT0" /> {{ pwMixT0.toFixed(2) }}</label>
+        <label>mix T1 <input type="range" min="0.2" max="1.2" step="0.02" v-model.number="pwMixT1" /> {{ pwMixT1.toFixed(2) }}</label>
+        <div class="group">shadow</div>
+        <label>shadow DX <input type="range" min="-1" max="1" step="0.05" v-model.number="pwShadowDX" /> {{ pwShadowDX.toFixed(2) }}</label>
+        <label>shadow DY <input type="range" min="-1" max="1" step="0.05" v-model.number="pwShadowDY" /> {{ pwShadowDY.toFixed(2) }}</label>
         <label>shadow amp <input type="range" min="0" max="0.2" step="0.01" v-model.number="pwShadowAmp" /> {{ pwShadowAmp.toFixed(2) }}</label>
       </template>
 
