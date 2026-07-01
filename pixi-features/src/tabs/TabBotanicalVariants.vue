@@ -20,6 +20,7 @@ import { bakeInkwash, silhouetteMask, type InkwashParams } from '../lib/inkwashB
 import { computeMaskSdf } from '../lib/watercolor/maskSdf'
 import { sdfToTexture } from '../lib/watercolor/sdfTexture'
 import { ProceduralWatercolorFilter } from '../lib/filters/ProceduralWatercolorFilter'
+import { pigmentKS } from '../lib/watercolor/pigmentKS'
 import { useFps } from '../shared/useFps'
 
 const { fps, frameMs } = useFps()
@@ -316,6 +317,14 @@ function rebuild() {
         bandCount: 6,
         edgeWidth: 1.2,
         bandGain: 0.6,
+        pigA: pigmentKS([0.35, 0.62, 0.48], [0.06, 0.20, 0.13]),
+        pigB: pigmentKS([0.80, 0.56, 0.24], [0.26, 0.13, 0.05]),
+        plateauLo: 0.12,
+        plateauHi: 0.5,
+        mixT0: 0.2,
+        mixT1: 0.85,
+        baseDensity: 0.5,
+        coverKnee: 0.35,
       })
       const white = markRaw(new Sprite(Texture.WHITE))
       white.anchor.set(0.5)
