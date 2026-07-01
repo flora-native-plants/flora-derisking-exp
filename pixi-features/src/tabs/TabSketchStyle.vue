@@ -16,9 +16,10 @@
  */
 import { ref, reactive, onMounted, onUnmounted, markRaw, watch } from 'vue'
 import { Application, Assets, Container, Graphics, Sprite, Texture } from 'pixi.js'
-import { drawRoughStroke, polylineToPath, type RoughStrokeOptions } from '../lib/roughStroke'
+import { drawRoughStroke, type RoughStrokeOptions } from '../lib/roughStroke'
 import { PaperGrainFilter, PAPER_GRAIN_DEFAULTS } from '../lib/filters/PaperGrainFilter'
 import { useFps } from '../shared/useFps'
+import { pencilTestShapes } from '../fixtures/pencilTestShapes'
 
 const { fps, frameMs } = useFps()
 const canvasEl = ref<HTMLCanvasElement>()
@@ -67,34 +68,6 @@ let inkFilter = markRaw({} as PaperGrainFilter)
 let camX = 0, camY = 0, zoom = 1
 let isPanning = false, panStart = { x: 0, y: 0 }
 
-// --- Sample landscape-CAD shapes, in world units, as SVG `d` strings ------------
-interface Shape { label: string; d: string; color: number }
-
-function shapes(): Shape[] {
-  // A property boundary (closed polygon)
-  const boundary = polylineToPath(
-    [[-260, -150], [260, -150], [260, 150], [40, 150], [-60, 90], [-260, 90]],
-    true,
-  )
-  // A curvy planting-bed outline (beziers)
-  const bed =
-    'M -180 -40 C -140 -110, -40 -120, 30 -80 ' +
-    'C 90 -48, 120 20, 70 70 ' +
-    'C 20 118, -110 110, -170 60 ' +
-    'C -210 26, -220 10, -180 -40 Z'
-  // A straight walkway path (open polyline)
-  const walk = polylineToPath([[-240, 20], [-80, 20], [40, -30], [220, -30]])
-  // A dimension-leader style zigzag
-  const leader = polylineToPath([[-200, 120], [-160, 60], [-120, 120], [-80, 60], [-40, 120]])
-
-  return [
-    { label: 'Property boundary (polygon)', d: boundary, color: 0x2b2b28 },
-    { label: 'Planting bed (bezier)',        d: bed,      color: 0x4b7a4b },
-    { label: 'Walkway (polyline)',           d: walk,     color: 0x8a6d3b },
-    { label: 'Leader zigzag',                d: leader,   color: 0x3b6ea5 },
-  ]
-}
-
 function crispPath(g: Graphics, d: string): void {
   // Minimal SVG-d replay for the faint reference overlay (M/L/C/Z only — matches shapes()).
   const toks = d.match(/[MLCZ]|-?\d*\.?\d+/g) ?? []
@@ -118,7 +91,7 @@ function redraw(): void {
     seed: opts.seed,
     doubleStroke: opts.doubleStroke,
   }
-  for (const s of shapes()) {
+  for (const s of pencilTestShapes()) {
     if (opts.showCrisp) {
       const ref = markRaw(new Graphics())
       crispPath(ref, s.d)
