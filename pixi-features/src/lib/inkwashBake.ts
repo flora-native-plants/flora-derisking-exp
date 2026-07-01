@@ -50,7 +50,7 @@ function opticalDensity(hex: string): [number, number, number] {
 }
 
 /** Rasterise the silhouette polygons to a 0/1 coverage mask in canvas space. */
-function silhouetteMask(polys: Vec2[][], size: number, raster: number): Float32Array {
+export function silhouetteMask(polys: Vec2[][], size: number, raster: number): Float32Array {
   const c = document.createElement('canvas')
   c.width = c.height = size
   const ctx = c.getContext('2d')!

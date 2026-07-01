@@ -16,7 +16,10 @@ import { Application, Assets, Container, Graphics, Sprite, TilingSprite, Text, T
 import { fetchPlantSvg, fetchPlantList, type PlantSummary } from '../lib/plantApi'
 import { extractSilhouette, type Vec2 } from '../lib/silhouette'
 import { WashTextureTintFilter } from '../lib/filters/WashTextureTintFilter'
-import { bakeInkwash, type InkwashParams } from '../lib/inkwashBake'
+import { bakeInkwash, silhouetteMask, type InkwashParams } from '../lib/inkwashBake'
+import { computeMaskSdf } from '../lib/watercolor/maskSdf'
+import { sdfToTexture } from '../lib/watercolor/sdfTexture'
+import { ProceduralWatercolorFilter } from '../lib/filters/ProceduralWatercolorFilter'
 import { useFps } from '../shared/useFps'
 
 const { fps, frameMs } = useFps()
@@ -36,7 +39,7 @@ const VARIANT_COUNT = ref(9)
 const CONTOUR_COLOR = 0x4a3b2a
 
 // ── controls ─────────────────────────────────────────────────────────────────
-const mode          = ref<'texture' | 'sim'>('texture')  // real-texture vs baked mini-inkwash
+const mode          = ref<'texture' | 'sim' | 'procedural'>('texture')  // real-texture vs baked mini-inkwash vs algorithmic
 const plantId       = ref<number>(DEFAULT_PLANT_ID)
 const dilation      = ref(4)
 const variation     = ref(1.0)   // how far each variant samples across the texture
@@ -66,6 +69,13 @@ const contourOn     = ref(true)
 const contourWidth  = ref(2.5)
 const contourWobble = ref(2.5)
 const contourAlpha  = ref(0.9)
+
+// procedural watercolor controls (Task 4 temp wiring)
+const pwOffsetBase    = ref(10)
+const pwWarpAmp       = ref(0.03)
+const pwFbmB          = ref(0.4)
+const pwPaperC        = ref(0.08)
+const pwShadowAmp     = ref(0.05)
 
 let app = markRaw({} as Application)
 let grid = markRaw({} as Container)
@@ -272,10 +282,47 @@ function rebuild() {
   const cool: [number, number, number] = [foliage[0] * 0.7, foliage[1] * 0.72, foliage[2] * 0.66] // darker/cooler
   const t0 = performance.now()
 
+  // For procedural mode: build the SDF ONCE (shared silhouette across all seeds).
+  // Rasterize mask at RASTER×RASTER using poly coords in [0..RASTER] space (1:1).
+  // sdfTexelWorldSize converts SDF pixels → display-world pixels.
+  let procSdfTex: ReturnType<typeof sdfToTexture> | null = null
+  const procTexelWorld = DISPLAY / RASTER
+  if (mode.value === 'procedural') {
+    const mask = silhouetteMask(silhouettePolys, RASTER, RASTER)
+    const sdf = computeMaskSdf(mask, RASTER)
+    procSdfTex = sdfToTexture(sdf, RASTER)
+  }
+
+  // Normalize shadow direction so the shader receives a unit vector.
+  const shadowDX = 0.7071, shadowDY = 0.7071
+  const shadowDir: [number, number] = [shadowDX, shadowDY]
+
   const ink = mode.value === 'sim' ? inkwashParams() : null
   for (let seed = 0; seed < n; seed++) {
     const cellRoot = markRaw(new Container())
-    if (ink) {
+    if (mode.value === 'procedural' && procSdfTex) {
+      // Procedural watercolor: white Sprite with drying-time-field filter + clip mask.
+      const filter = new ProceduralWatercolorFilter({
+        sdf: procSdfTex,
+        sdfTexelWorldSize: procTexelWorld,
+        seed,
+        offsetBase: pwOffsetBase.value,
+        offsetNoiseAmp: pwOffsetBase.value * 0.12,
+        warpAmp: pwWarpAmp.value,
+        shadowDir,
+        shadowAmp: pwShadowAmp.value,
+        fbmB: pwFbmB.value,
+        paperC: pwPaperC.value,
+      })
+      const white = markRaw(new Sprite(Texture.WHITE))
+      white.anchor.set(0.5)
+      white.width = white.height = DISPLAY
+      white.filters = [filter]
+      const clipMask = buildMaskGraphics(1)
+      cellRoot.addChild(clipMask)
+      cellRoot.addChild(white)
+      white.mask = clipMask
+    } else if (ink) {
       // Baked mini-inkwash: one Sprite from the fluid-sim canvas + contour.
       const simCanvas = bakeInkwash(silhouettePolys, seed, SIM_SIZE, RASTER, ink)
       const s = markRaw(new Sprite(Texture.from(simCanvas)))
@@ -362,6 +409,7 @@ watch([
   bloomColor, bloomStrength, bloomSize, bloomSoftness,
   grainOn, grainStrength, contourOn, contourWidth, contourWobble, contourAlpha, VARIANT_COUNT,
   simDrops, simWetness, simBleed, simIterations, simEdge, simGranule, simStrength, simPaper,
+  pwOffsetBase, pwWarpAmp, pwFbmB, pwPaperC, pwShadowAmp,
 ], scheduleRebuild)
 </script>
 
@@ -386,6 +434,7 @@ watch([
         <select v-model="mode">
           <option value="texture">real texture</option>
           <option value="sim">mini-inkwash (sim)</option>
+          <option value="procedural">procedural (algorithmic)</option>
         </select>
       </label>
       <label>variants <input type="range" min="1" max="16" step="1" v-model.number="VARIANT_COUNT" /> {{ VARIANT_COUNT }}</label>
@@ -398,6 +447,15 @@ watch([
         <label>wash zoom <input type="range" min="0.5" max="3" step="0.1" v-model.number="washScale" /> {{ washScale.toFixed(1) }}</label>
         <label>bleed <input type="range" min="0" max="20" step="1" v-model.number="bleed" /> {{ bleed }}</label>
         <label>tonal depth <input type="range" min="0" max="1" step="0.05" v-model.number="tonal" /> {{ tonal.toFixed(2) }}</label>
+      </template>
+
+      <template v-else-if="mode === 'procedural'">
+        <div class="group">procedural watercolor (T-field preview)</div>
+        <label>offset base <input type="range" min="4" max="24" step="1" v-model.number="pwOffsetBase" /> {{ pwOffsetBase }}</label>
+        <label>warp amp <input type="range" min="0" max="0.08" step="0.005" v-model.number="pwWarpAmp" /> {{ pwWarpAmp.toFixed(3) }}</label>
+        <label>fBm weight <input type="range" min="0" max="0.8" step="0.05" v-model.number="pwFbmB" /> {{ pwFbmB.toFixed(2) }}</label>
+        <label>paper weight <input type="range" min="0" max="0.3" step="0.01" v-model.number="pwPaperC" /> {{ pwPaperC.toFixed(2) }}</label>
+        <label>shadow amp <input type="range" min="0" max="0.2" step="0.01" v-model.number="pwShadowAmp" /> {{ pwShadowAmp.toFixed(2) }}</label>
       </template>
 
       <template v-else>
