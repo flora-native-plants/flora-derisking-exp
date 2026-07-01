@@ -39,6 +39,15 @@ const CR_TANGENT = 1 / 6
 // closing vertex and are dropped, so a closed path never keeps a coincident seam CP.
 const SEAM_EPS = 1e-6
 
+// A run whose max perpendicular deviation from its chord is below this fraction of
+// the chord length is treated as straight (one bow instead of full squiggle).
+export const STRAIGHT_FRAC = 0.03
+// Straight runs keep only this fraction of the squiggle amplitude (confident line).
+export const STRAIGHT_SQUIGGLE_SCALE = 0.35
+// Bow amplitude for a straight run = chordLength / BOW_DIVISOR, capped at BOW_CAP.
+export const BOW_DIVISOR = 200
+export const BOW_CAP = 14
+
 const _cache = new Map<string, StrokeOp[]>()
 
 function cacheKey(d: string, o: KinematicStrokeOptions): string {
@@ -171,6 +180,89 @@ function stripClosingDuplicates(poly: Pt[]): Pt[] {
     Math.abs(poly[end - 1][1] - first[1]) < SEAM_EPS
   ) end--
   return poly.slice(0, end)
+}
+
+/** Turn angle (radians, [0, PI]) between the incoming a->b and outgoing b->c directions. */
+export function turnAngle(a: Pt, b: Pt, c: Pt): number {
+  const v1x = b[0] - a[0], v1y = b[1] - a[1]
+  const v2x = c[0] - b[0], v2y = c[1] - b[1]
+  const l1 = Math.hypot(v1x, v1y), l2 = Math.hypot(v2x, v2y)
+  if (l1 === 0 || l2 === 0) return 0
+  const dot = (v1x * v2x + v1y * v2y) / (l1 * l2)
+  return Math.acos(Math.max(-1, Math.min(1, dot)))
+}
+
+/**
+ * Split a subpath polyline into corner-to-corner runs. A vertex whose turn angle
+ * exceeds `cornerRad` is a hard corner: the spline restarts there (crisp C0 corner).
+ * Returns { runs, loop }: a closed subpath with NO corners yields one run + loop=true
+ * (a smooth loop, e.g. an ellipse); otherwise open runs + loop=false (each corner is
+ * drawn as two crossing strokes). Runs share corner endpoints on purpose.
+ */
+export function splitAtCorners(poly: Pt[], closed: boolean, cornerRad: number): { runs: Pt[][]; loop: boolean } {
+  const n = poly.length
+  if (n < 3) return { runs: [poly.slice()], loop: false }
+  const cornerIdx: number[] = []
+  const lo = closed ? 0 : 1
+  const hi = closed ? n : n - 1
+  for (let i = lo; i < hi; i++) {
+    const a = poly[(i - 1 + n) % n], b = poly[i % n], c = poly[(i + 1) % n]
+    if (turnAngle(a, b, c) > cornerRad) cornerIdx.push(i % n)
+  }
+  if (cornerIdx.length === 0) return { runs: [poly.slice()], loop: closed }
+
+  const runs: Pt[][] = []
+  if (closed) {
+    for (let k = 0; k < cornerIdx.length; k++) {
+      const s = cornerIdx[k], e = cornerIdx[(k + 1) % cornerIdx.length]
+      const run: Pt[] = [poly[s]]
+      let i = s
+      do { i = (i + 1) % n; run.push(poly[i]) } while (i !== e)
+      runs.push(run)
+    }
+  } else {
+    let prev = 0
+    for (const c of cornerIdx) { runs.push(poly.slice(prev, c + 1)); prev = c }
+    runs.push(poly.slice(prev))
+  }
+  return { runs, loop: false }
+}
+
+/** Max perpendicular distance from any run point to the run's chord (start->end). */
+export function chordDeviation(run: Pt[]): number {
+  const a = run[0], b = run[run.length - 1]
+  const abx = b[0] - a[0], aby = b[1] - a[1]
+  const L = Math.hypot(abx, aby) || 1
+  let maxd = 0
+  for (const p of run) {
+    const d = Math.abs((p[0] - a[0]) * aby - (p[1] - a[1]) * abx) / L
+    if (d > maxd) maxd = d
+  }
+  return maxd
+}
+
+/** True if the run is essentially straight (deviates < STRAIGHT_FRAC of its chord length). */
+export function isStraightRun(run: Pt[]): boolean {
+  if (run.length < 3) return true
+  const a = run[0], b = run[run.length - 1]
+  const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1
+  return chordDeviation(run) < STRAIGHT_FRAC * L
+}
+
+/** Displace control points by a single half-sine bow (0 at ends, `amp` perpendicular at middle). */
+export function bowRun(cps: Pt[], amp: number): Pt[] {
+  const n = cps.length
+  if (n < 2 || amp === 0) return cps
+  const a = cps[0], b = cps[n - 1]
+  let tx = b[0] - a[0], ty = b[1] - a[1]
+  const L = Math.hypot(tx, ty) || 1
+  tx /= L; ty /= L
+  const nx = -ty, ny = tx // unit normal
+  return cps.map((p, i) => {
+    // Pin endpoints exactly to 0 to avoid Math.sin(PI)≈1.2e-15 float drift.
+    const w = (i === 0 || i === n - 1) ? 0 : Math.sin(Math.PI * (i / (n - 1)))
+    return [p[0] + nx * amp * w, p[1] + ny * amp * w] as Pt
+  })
 }
 
 /** Generate (or fetch cached) min-jerk op-list for an SVG path `d` string. */
