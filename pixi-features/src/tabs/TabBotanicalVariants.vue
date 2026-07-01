@@ -1,18 +1,21 @@
 <script setup lang="ts">
 /**
- * Botanical Variants spike — tune the per-instance VARIATION algorithm.
+ * Botanical Variants spike — tune per-instance VARIATION on the REAL watercolour
+ * texture (same look as the Botanical Illustration tab), not procedural fills.
  *
- * Shows ONE species painted N different ways (one grid cell per seed) so we can
- * dial in natural, hand-painted variability before re-porting to flora-studio.
- * The interior of each variant is built from seeded pigment POOLS (edge-darkening
- * + granulation) — see lib/watercolorPools.ts — with a hand-drawn contour on top.
- * The silhouette (plant identity) is IDENTICAL across variants by design.
+ * Each variant is a mini Botanical-Illustration render: a real wash-texture
+ * TilingSprite → WashTextureTintFilter (the texture's own density pools pigment)
+ * → masked to a softened silhouette, plus a second layered wash, a bloom, grain,
+ * and a hand-drawn contour. Variation per seed comes from sampling a DIFFERENT
+ * patch / rotation of the (large, varied) wash texture + bloom placement — so the
+ * variants look like genuinely different hand-painted washes, all real pigment.
+ * The silhouette (plant identity) is identical across variants by design.
  */
 import { ref, watch, onMounted, onUnmounted, markRaw } from 'vue'
-import { Application, Container, Sprite, Text, Texture } from 'pixi.js'
+import { Application, Assets, Container, Graphics, Sprite, TilingSprite, Text, Texture } from 'pixi.js'
 import { fetchPlantSvg, fetchPlantList, type PlantSummary } from '../lib/plantApi'
 import { extractSilhouette, type Vec2 } from '../lib/silhouette'
-import { renderVariantInterior, type WatercolorPoolParams } from '../lib/watercolorPools'
+import { WashTextureTintFilter } from '../lib/filters/WashTextureTintFilter'
 import { useFps } from '../shared/useFps'
 
 const { fps, frameMs } = useFps()
@@ -22,37 +25,39 @@ const status = ref('Booting…')
 const plants = ref<PlantSummary[]>([])
 const DEFAULT_PLANT_ID = 2
 const FALLBACK_COLOR = '#4CAF50'
+const WASH_TEXTURE = '/textures/watercolor/wash-green.png'
+const GRAIN_TEXTURE = '/textures/pencil/grain-heavy.jpg'
 
-const RASTER = 512          // silhouette extraction space
-const CELL_RENDER = 260     // px each variant is painted at
+const RASTER = 512
+const DISPLAY = 300         // local render space per variant cell
 const GRID_COLS = 3
 const VARIANT_COUNT = ref(9)
-const CONTOUR_COLOR = '#4a3b2a'
+const CONTOUR_COLOR = 0x4a3b2a
 
 // ── controls ─────────────────────────────────────────────────────────────────
-const plantId          = ref<number>(DEFAULT_PLANT_ID)
-const dilation         = ref(4)
-const variationStrength= ref(0.45)
-const poolCount        = ref(3)
-const edgeDarkening    = ref(0.6)
-const granulation      = ref(0.4)
-const boundaryWobble   = ref(0.5)
-const tonalDepth       = ref(0.55)
-const tempShift        = ref(0.35)
-const backruns         = ref(0.5)
-const driedEdge        = ref(0.5)
-const baseStrength     = ref(0.7)
-const softness         = ref(0.5)
-const bloomColor       = ref('#a07560')
-const bloomStrength    = ref(0.6)
-const bloomSize        = ref(0.5)
-const contourOn        = ref(true)
-const contourWidth     = ref(2.0)
-const contourWobble    = ref(2.5)
-const contourAlpha     = ref(0.9)
+const plantId       = ref<number>(DEFAULT_PLANT_ID)
+const dilation      = ref(4)
+const variation     = ref(1.0)   // how far each variant samples across the texture
+const wetness       = ref(0.85)
+const paperCut      = ref(0.04)
+const washScale     = ref(1.4)
+const bleed         = ref(7)
+const tonal         = ref(0.5)   // strength of the 2nd (darker) layered wash → depth
+const bloomColor    = ref('#a07560')
+const bloomStrength = ref(0.6)
+const bloomSize     = ref(0.5)
+const bloomSoftness = ref(0.55)
+const grainOn       = ref(true)
+const grainStrength = ref(0.3)
+const contourOn     = ref(true)
+const contourWidth  = ref(2.5)
+const contourWobble = ref(2.5)
+const contourAlpha  = ref(0.9)
 
 let app = markRaw({} as Application)
 let grid = markRaw({} as Container)
+let washTex = markRaw({} as Texture)
+let grainTex = markRaw({} as Texture)
 let silhouettePolys: Vec2[][] = []
 let cachedKey = ''
 
@@ -63,23 +68,22 @@ function currentColor(): string {
   const c = currentPlant()?.planColor
   return c && /^#[0-9a-fA-F]{6}$/.test(c) ? c : FALLBACK_COLOR
 }
-function poolParams(): WatercolorPoolParams {
-  return {
-    foliage: currentColor(),
-    accent: bloomColor.value,
-    baseStrength: baseStrength.value,
-    poolCount: poolCount.value,
-    variationStrength: variationStrength.value,
-    edgeDarkening: edgeDarkening.value,
-    granulation: granulation.value,
-    boundaryWobble: boundaryWobble.value,
-    bloomStrength: bloomStrength.value,
-    bloomSize: bloomSize.value,
-    softness: softness.value,
-    tonalDepth: tonalDepth.value,
-    tempShift: tempShift.value,
-    backruns: backruns.value,
-    driedEdge: driedEdge.value,
+function hexToLinear(hex: string): [number, number, number] {
+  const n = parseInt(hex.replace('#', ''), 16)
+  return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255]
+}
+function hexToRgb255(hex: string): [number, number, number] {
+  const n = parseInt(hex.replace('#', ''), 16)
+  return [n >> 16 & 255, n >> 8 & 255, n & 255]
+}
+/** Deterministic per-seed RNG (mulberry32). */
+function rngFor(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
 }
 
@@ -94,36 +98,130 @@ async function ensurePlantData() {
   cachedKey = key
 }
 
-/** Smooth per-point jitter, seeded phase so each variant's edge differs. */
-function wobbleContour(poly: Vec2[], amp: number, phase: number, k: number): Vec2[] {
+/** Scale a 512-space polygon to the DISPLAY box, centred at origin. */
+function scalePoly(poly: Vec2[]): Vec2[] {
+  const s = DISPLAY / RASTER, off = DISPLAY / 2
+  return poly.map(p => ({ x: p.x * s - off, y: p.y * s - off }))
+}
+function inflatePoly(poly: Vec2[], factor: number): Vec2[] {
+  if (factor === 1) return poly
+  let cx = 0, cy = 0
+  for (const p of poly) { cx += p.x; cy += p.y }
+  cx /= poly.length; cy /= poly.length
+  return poly.map(p => ({ x: cx + (p.x - cx) * factor, y: cy + (p.y - cy) * factor }))
+}
+function wobblePoly(poly: Vec2[], amp: number, phase: number): Vec2[] {
   return poly.map((p, i) => ({
-    x: p.x * k + Math.sin(i * 0.7 + phase) * amp + Math.sin(i * 2.3 + 1.0 + phase) * amp * 0.4,
-    y: p.y * k + Math.cos(i * 0.9 + phase) * amp + Math.cos(i * 1.7 + 2.0 + phase) * amp * 0.4,
+    x: p.x + Math.sin(i * 0.7 + phase) * amp + Math.sin(i * 2.3 + 1.0 + phase) * amp * 0.4,
+    y: p.y + Math.cos(i * 0.9 + phase) * amp + Math.cos(i * 1.7 + 2.0 + phase) * amp * 0.4,
   }))
 }
-
-/** Stroke the hand-drawn contour onto the (already pigment-painted) variant canvas. */
-function drawContour(canvas: HTMLCanvasElement, seed: number) {
-  if (!contourOn.value) return
-  const ctx = canvas.getContext('2d')!
-  const k = canvas.width / RASTER
-  const phase = (seed * 1.618) % (Math.PI * 2)
-  ctx.save()
-  ctx.strokeStyle = CONTOUR_COLOR
-  ctx.globalAlpha = contourAlpha.value
-  ctx.lineWidth = contourWidth.value
-  ctx.lineJoin = 'round'
-  ctx.lineCap = 'round'
+function buildMaskGraphics(inflate = 1): Graphics {
+  const g = markRaw(new Graphics())
   for (const poly of silhouettePolys) {
     if (poly.length < 3) continue
-    const pts = wobbleContour(poly, contourWobble.value, phase, k)
-    ctx.beginPath()
-    ctx.moveTo(pts[0].x, pts[0].y)
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y)
-    ctx.closePath()
-    ctx.stroke()
+    g.poly(inflatePoly(scalePoly(poly), inflate)).fill({ color: 0xffffff })
   }
-  ctx.restore()
+  return g
+}
+
+/** A real wash-texture layer, tinted + masked, sampling a seeded texture patch. */
+function buildWashLayer(seed: number, tint: [number, number, number], strength: number, scaleMul: number): Container {
+  const layer = markRaw(new Container())
+  const m = DISPLAY * 0.6
+  const wash = markRaw(new TilingSprite({ texture: washTex, width: DISPLAY + m, height: DISPLAY + m }))
+  wash.position.set(-(DISPLAY + m) / 2, -(DISPLAY + m) / 2)
+  wash.tileScale.set((washScale.value * scaleMul * DISPLAY) / washTex.width)
+  // Seeded patch — a large, varied texture, so different offsets/rotations are
+  // genuinely different REAL pigment (this is the per-variant variation).
+  const r = rngFor(seed)
+  const spread = variation.value
+  wash.tilePosition.set(r() * washTex.width * spread, r() * washTex.height * spread)
+  wash.tileRotation = r() * Math.PI * 2 * spread
+  wash.filters = [new WashTextureTintFilter(tint, strength, paperCut.value)]
+  layer.addChild(wash)
+  const mask = buildMaskGraphics(1 + bleed.value / 100)
+  layer.addChild(mask)
+  layer.mask = mask
+  return layer
+}
+
+function smoothstep(e0: number, e1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)))
+  return t * t * (3 - 2 * t)
+}
+
+/** Bloom — a warm accent pooled at a seeded off-centre anchor, clipped to the shape. */
+function buildBloomSprite(seed: number): Sprite | null {
+  if (bloomStrength.value <= 0 || !silhouettePolys.length) return null
+  const size = DISPLAY
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  const r = rngFor(seed * 31 + 3)
+  const ang = r() * Math.PI * 2
+  const rad = 0.15 + r() * 0.2
+  const ax = (0.5 + Math.cos(ang) * rad) * size
+  const ay = (0.5 + Math.sin(ang) * rad) * size
+  const radiusPx = Math.max(1, bloomSize.value * size * 0.5)
+  const soft = bloomSoftness.value
+  const [cr, cg, cb] = hexToRgb255(bloomColor.value)
+  const img = ctx.createImageData(size, size)
+  const d = img.data
+  for (let py = 0; py < size; py++) {
+    for (let px = 0; px < size; px++) {
+      const dx = (px - ax) / radiusPx, dy = (py - ay) / radiusPx
+      const wob = Math.sin(Math.atan2(dy, dx) * 3 + seed) * 0.12
+      const dist = Math.sqrt(dx * dx + dy * dy) + wob
+      const a = 1 - smoothstep(1 - soft, 1.2, dist)
+      const i = (py * size + px) * 4
+      d[i] = cr; d[i + 1] = cg; d[i + 2] = cb; d[i + 3] = Math.round(a * 255 * bloomStrength.value)
+    }
+  }
+  ctx.putImageData(img, 0, 0)
+  const k = size / RASTER
+  ctx.globalCompositeOperation = 'destination-in'
+  ctx.beginPath()
+  for (const poly of silhouettePolys) {
+    if (poly.length < 3) continue
+    ctx.moveTo(poly[0].x * k, poly[0].y * k)
+    for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x * k, poly[i].y * k)
+    ctx.closePath()
+  }
+  ctx.fill()
+  ctx.globalCompositeOperation = 'source-over'
+  const sprite = markRaw(new Sprite(Texture.from(canvas)))
+  sprite.anchor.set(0.5)
+  return sprite
+}
+
+/** Graphite grain tooth, multiplied over the wash, clipped to the silhouette. */
+function buildGrainLayer(): Container {
+  const layer = markRaw(new Container())
+  const m = DISPLAY * 0.6
+  const grain = markRaw(new TilingSprite({ texture: grainTex, width: DISPLAY + m, height: DISPLAY + m }))
+  grain.position.set(-(DISPLAY + m) / 2, -(DISPLAY + m) / 2)
+  grain.tileScale.set((DISPLAY * 1.1) / grainTex.width)
+  grain.alpha = grainStrength.value
+  grain.blendMode = 'multiply'
+  layer.addChild(grain)
+  const mask = buildMaskGraphics(1)
+  layer.addChild(mask)
+  layer.mask = mask
+  return layer
+}
+
+/** Hand-drawn contour with a seeded wobble phase. */
+function buildContour(seed: number): Graphics {
+  const g = markRaw(new Graphics())
+  const phase = (seed * 1.618) % (Math.PI * 2)
+  for (const poly of silhouettePolys) {
+    if (poly.length < 3) continue
+    const pts = wobblePoly(scalePoly(poly), contourWobble.value, phase)
+    g.poly(pts, true).stroke({ color: CONTOUR_COLOR, width: contourWidth.value, alpha: contourAlpha.value, join: 'round', cap: 'round' })
+  }
+  return g
 }
 
 function layoutCell(index: number, cell: number): { x: number; y: number } {
@@ -133,42 +231,39 @@ function layoutCell(index: number, cell: number): { x: number; y: number } {
 }
 
 function rebuild() {
-  if (!app.stage || !silhouettePolys.length) return
+  if (!app.stage || !silhouettePolys.length || !washTex.source) return
   grid.removeChildren().forEach(c => c.destroy({ children: true }))
 
   const n = VARIANT_COUNT.value
   const rows = Math.ceil(n / GRID_COLS)
   const cell = Math.min(app.screen.width / GRID_COLS, app.screen.height / rows)
-  const inner = cell * 0.84
-  const params = poolParams()
+  const inner = cell * 0.86
+  const foliage = hexToLinear(currentColor())
+  const cool: [number, number, number] = [foliage[0] * 0.7, foliage[1] * 0.72, foliage[2] * 0.66] // darker/cooler
   const t0 = performance.now()
 
   for (let seed = 0; seed < n; seed++) {
-    const cellCanvas = renderVariantInterior(silhouettePolys, seed, CELL_RENDER, RASTER, params)
-    drawContour(cellCanvas, seed)
+    const cellRoot = markRaw(new Container())
+    cellRoot.addChild(buildWashLayer(seed * 7 + 1, foliage, wetness.value, 1.0))
+    if (tonal.value > 0) cellRoot.addChild(buildWashLayer(seed * 13 + 5, cool, wetness.value * tonal.value, 1.35))
+    const bloom = buildBloomSprite(seed)
+    if (bloom) cellRoot.addChild(bloom)
+    if (grainOn.value) cellRoot.addChild(buildGrainLayer())
+    if (contourOn.value) cellRoot.addChild(buildContour(seed))
+    cellRoot.scale.set(inner / DISPLAY)
 
     const container = markRaw(new Container())
     const { x, y } = layoutCell(seed, cell)
     container.position.set(x, y)
+    container.addChild(cellRoot)
 
-    const sprite = markRaw(new Sprite(Texture.from(cellCanvas)))
-    sprite.anchor.set(0.5)
-    sprite.width = inner
-    sprite.height = inner
-    container.addChild(sprite)
-
-    const label = markRaw(new Text({
-      text: `seed ${seed}`,
-      style: { fontFamily: 'monospace', fontSize: 12, fill: 0x6a5f45 },
-    }))
+    const label = markRaw(new Text({ text: `seed ${seed}`, style: { fontFamily: 'monospace', fontSize: 12, fill: 0x6a5f45 } }))
     label.anchor.set(0.5, 0)
     label.position.set(0, inner / 2 - 2)
     container.addChild(label)
-
     grid.addChild(container)
   }
-  const dt = Math.round(performance.now() - t0)
-  status.value = `${currentPlant()?.commonName ?? plantId.value} · ${n} variants · ${dt}ms`
+  status.value = `${currentPlant()?.commonName ?? plantId.value} · ${n} variants · ${Math.round(performance.now() - t0)}ms`
 }
 
 async function reloadAll() {
@@ -181,25 +276,19 @@ async function reloadAll() {
   }
 }
 
-// Debounce heavy rebuilds so slider drags don't thrash the canvas2d passes.
 let rebuildTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleRebuild() {
   if (rebuildTimer) clearTimeout(rebuildTimer)
   rebuildTimer = setTimeout(rebuild, 90)
 }
 
-// ── drag-to-pan ────────────────────────────────────────────────────────────
-// The control panel overlays the left of the canvas; pan the grid out from under
-// it (and around) by dragging. rebuild() lays cells relative to the grid origin,
-// so grid.position (the pan offset) survives rebuilds.
-const PANEL_CLEAR = 400   // initial x so the left column clears the panel
-let dragging = false
-let lastX = 0, lastY = 0
+// ── drag-to-pan ──────────────────────────────────────────────────────────────
+const PANEL_CLEAR = 400
+let dragging = false, lastX = 0, lastY = 0
 function onPanStart(e: PointerEvent) { dragging = true; lastX = e.clientX; lastY = e.clientY }
 function onPanMove(e: PointerEvent) {
   if (!dragging || !grid.position) return
-  grid.position.x += e.clientX - lastX
-  grid.position.y += e.clientY - lastY
+  grid.position.x += e.clientX - lastX; grid.position.y += e.clientY - lastY
   lastX = e.clientX; lastY = e.clientY
 }
 function onPanEnd() { dragging = false }
@@ -209,8 +298,13 @@ onMounted(async () => {
   app = markRaw(new Application())
   await app.init({ canvas: canvasEl.value!, resizeTo: canvasEl.value!.parentElement!, antialias: true, background: 0xf2ead4 })
 
-  plants.value = (await fetchPlantList().catch(() => [] as PlantSummary[]))
-    .sort((a, b) => a.commonName.localeCompare(b.commonName))
+  let loaded: PlantSummary[] = []
+  ;[washTex, grainTex, loaded] = await Promise.all([
+    Assets.load(WASH_TEXTURE),
+    Assets.load(GRAIN_TEXTURE),
+    fetchPlantList().catch(() => [] as PlantSummary[]),
+  ])
+  plants.value = loaded.sort((a, b) => a.commonName.localeCompare(b.commonName))
 
   grid = markRaw(new Container())
   app.stage.addChild(grid)
@@ -224,23 +318,18 @@ onUnmounted(() => { if (app.destroy) app.destroy(true, { children: true }) })
 
 watch([plantId, dilation], reloadAll)
 watch([
-  variationStrength, poolCount, edgeDarkening, granulation, boundaryWobble,
-  tonalDepth, tempShift, backruns, driedEdge, baseStrength, softness, bloomColor, bloomStrength, bloomSize,
-  contourOn, contourWidth, contourWobble, contourAlpha, VARIANT_COUNT,
+  variation, wetness, paperCut, washScale, bleed, tonal,
+  bloomColor, bloomStrength, bloomSize, bloomSoftness,
+  grainOn, grainStrength, contourOn, contourWidth, contourWobble, contourAlpha, VARIANT_COUNT,
 ], scheduleRebuild)
 </script>
 
 <template>
   <div class="wrap">
     <canvas
-      ref="canvasEl"
-      class="pan"
-      :class="{ dragging }"
-      @pointerdown="onPanStart"
-      @pointermove="onPanMove"
-      @pointerup="onPanEnd"
-      @pointerleave="onPanEnd"
-      @dblclick="resetView"
+      ref="canvasEl" class="pan" :class="{ dragging }"
+      @pointerdown="onPanStart" @pointermove="onPanMove" @pointerup="onPanEnd"
+      @pointerleave="onPanEnd" @dblclick="resetView"
     />
     <div class="hud"><div class="fps">{{ fps }} <span>fps</span></div><div>{{ frameMs }} ms</div></div>
 
@@ -253,26 +342,24 @@ watch([
       </label>
       <div class="meta">{{ plants.length }} plants · {{ currentPlant()?.scientificName ?? '—' }}</div>
       <label>variants <input type="range" min="1" max="16" step="1" v-model.number="VARIANT_COUNT" /> {{ VARIANT_COUNT }}</label>
+      <label>variation <input type="range" min="0" max="1" step="0.05" v-model.number="variation" /> {{ variation.toFixed(2) }}</label>
 
-      <div class="group">variation</div>
-      <label>strength <input type="range" min="0" max="1" step="0.05" v-model.number="variationStrength" /> {{ variationStrength.toFixed(2) }}</label>
-      <label>pools <input type="range" min="2" max="4" step="1" v-model.number="poolCount" /> {{ poolCount }}</label>
-      <label>edge dark <input type="range" min="0" max="1" step="0.05" v-model.number="edgeDarkening" /> {{ edgeDarkening.toFixed(2) }}</label>
-      <label>tonal depth <input type="range" min="0" max="1" step="0.05" v-model.number="tonalDepth" /> {{ tonalDepth.toFixed(2) }}</label>
-      <label>temp split <input type="range" min="0" max="1" step="0.05" v-model.number="tempShift" /> {{ tempShift.toFixed(2) }}</label>
-      <label>back-runs <input type="range" min="0" max="1" step="0.05" v-model.number="backruns" /> {{ backruns.toFixed(2) }}</label>
-      <label>dried edge <input type="range" min="0" max="1" step="0.05" v-model.number="driedEdge" /> {{ driedEdge.toFixed(2) }}</label>
-      <label>granulation <input type="range" min="0" max="1" step="0.05" v-model.number="granulation" /> {{ granulation.toFixed(2) }}</label>
-      <label>boundary <input type="range" min="0" max="1" step="0.05" v-model.number="boundaryWobble" /> {{ boundaryWobble.toFixed(2) }}</label>
+      <div class="group">watercolour (real texture)</div>
+      <label>wetness <input type="range" min="0" max="1" step="0.05" v-model.number="wetness" /> {{ wetness.toFixed(2) }}</label>
+      <label>paper cut <input type="range" min="0" max="0.4" step="0.01" v-model.number="paperCut" /> {{ paperCut.toFixed(2) }}</label>
+      <label>wash zoom <input type="range" min="0.5" max="3" step="0.1" v-model.number="washScale" /> {{ washScale.toFixed(1) }}</label>
+      <label>bleed <input type="range" min="0" max="20" step="1" v-model.number="bleed" /> {{ bleed }}</label>
+      <label>tonal depth <input type="range" min="0" max="1" step="0.05" v-model.number="tonal" /> {{ tonal.toFixed(2) }}</label>
 
-      <div class="group">wash / bloom</div>
-      <label>base wash <input type="range" min="0" max="1" step="0.05" v-model.number="baseStrength" /> {{ baseStrength.toFixed(2) }}</label>
-      <label>softness <input type="range" min="0.1" max="1" step="0.05" v-model.number="softness" /> {{ softness.toFixed(2) }}</label>
+      <div class="group">bloom</div>
       <label>bloom <input type="color" v-model="bloomColor" /> <code>{{ bloomColor }}</code></label>
       <label>bloom amt <input type="range" min="0" max="1" step="0.05" v-model.number="bloomStrength" /> {{ bloomStrength.toFixed(2) }}</label>
       <label>bloom size <input type="range" min="0.2" max="0.95" step="0.05" v-model.number="bloomSize" /> {{ bloomSize.toFixed(2) }}</label>
+      <label>bloom soft <input type="range" min="0.1" max="1" step="0.05" v-model.number="bloomSoftness" /> {{ bloomSoftness.toFixed(2) }}</label>
 
-      <div class="group">contour</div>
+      <div class="group">grain / contour</div>
+      <label><input type="checkbox" v-model="grainOn" /> graphite grain</label>
+      <label>grain <input type="range" min="0" max="0.8" step="0.05" v-model.number="grainStrength" /> {{ grainStrength.toFixed(2) }}</label>
       <label><input type="checkbox" v-model="contourOn" /> contour on</label>
       <label>width <input type="range" min="0.5" max="6" step="0.1" v-model.number="contourWidth" /> {{ contourWidth.toFixed(1) }}</label>
       <label>wobble <input type="range" min="0" max="8" step="0.5" v-model.number="contourWobble" /> {{ contourWobble.toFixed(1) }}</label>
