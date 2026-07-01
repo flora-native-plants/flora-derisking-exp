@@ -106,11 +106,12 @@ const sampleOf = (ops: typeof bend30, per = 8): Array<[number, number]> => {
 //     (proves corners are preserved, not smoothed away). Tolerance = overshoot + small margin.
 const D_LEADER = 'M -200 120 L -160 60 L -120 120 L -80 60 L -40 120'
 const leaderAnchors = anchorsOf(kinematicOpsForPath(D_LEADER, base))
+const CORNER_MARGIN = 3 // px headroom over the overshoot distance for the nearest anchor
 const CORNERS: Array<[number, number]> = [[-160, 60], [-120, 120], [-80, 60]]
 for (const cn of CORNERS) {
   let best = Infinity
   for (const an of leaderAnchors) best = Math.min(best, Math.hypot(an[0] - cn[0], an[1] - cn[1]))
-  assert.ok(best <= base.overshoot + 3, `corner ${cn} must have an anchor within ${base.overshoot + 3}px (got ${best.toFixed(2)})`)
+  assert.ok(best <= base.overshoot + CORNER_MARGIN, `corner ${cn} must have an anchor within ${base.overshoot + CORNER_MARGIN}px (got ${best.toFixed(2)})`)
 }
 
 // 12. Straightness: a dead-straight source segment must not wander. Bound = bow cap + scaled
@@ -118,9 +119,11 @@ for (const cn of CORNERS) {
 const straightSamples = sampleOf(kinematicOpsForPath('M 0 0 L 400 0', base))
 let maxDev = 0
 for (const p of straightSamples) maxDev = Math.max(maxDev, Math.abs(p[1]))
-// Coarse regression guard (the visual gate is the real straightness judge): a straight run's
-// deviation should stay near scaled-squiggle + bow, not full squiggle. '400' is the segment length.
-const STRAIGHT_BOUND = base.squiggle * STRAIGHT_SQUIGGLE_SCALE + 400 / BOW_DIVISOR + 4
+// Straightness guard: a dead-straight source segment must not wander like full squiggle. Bound is
+// scaled-squiggle + bow + margin. Measured deterministically: real dev ~3.76, a full-squiggle
+// revert ~5.3 — so this (~4.7) passes the fix and trips the regression. '400' is the segment length.
+const STRAIGHT_MARGIN = 0.6
+const STRAIGHT_BOUND = base.squiggle * STRAIGHT_SQUIGGLE_SCALE + 400 / BOW_DIVISOR + STRAIGHT_MARGIN
 assert.ok(maxDev <= STRAIGHT_BOUND, `straight segment deviation ${maxDev.toFixed(2)} must be <= ${STRAIGHT_BOUND.toFixed(2)}`)
 
 console.log('OK: kinematic cache contract holds (12 assertions)')
