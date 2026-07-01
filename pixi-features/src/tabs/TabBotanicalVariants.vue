@@ -16,6 +16,7 @@ import { Application, Assets, Container, Graphics, Sprite, TilingSprite, Text, T
 import { fetchPlantSvg, fetchPlantList, type PlantSummary } from '../lib/plantApi'
 import { extractSilhouette, type Vec2 } from '../lib/silhouette'
 import { WashTextureTintFilter } from '../lib/filters/WashTextureTintFilter'
+import { bakeInkwash, type InkwashParams } from '../lib/inkwashBake'
 import { useFps } from '../shared/useFps'
 
 const { fps, frameMs } = useFps()
@@ -35,9 +36,21 @@ const VARIANT_COUNT = ref(9)
 const CONTOUR_COLOR = 0x4a3b2a
 
 // ── controls ─────────────────────────────────────────────────────────────────
+const mode          = ref<'texture' | 'sim'>('texture')  // real-texture vs baked mini-inkwash
 const plantId       = ref<number>(DEFAULT_PLANT_ID)
 const dilation      = ref(4)
 const variation     = ref(1.0)   // how far each variant samples across the texture
+
+// mini-inkwash (baked fluid sim) controls
+const SIM_SIZE      = 240
+const simDrops      = ref(8)
+const simWetness    = ref(0.8)
+const simBleed      = ref(0.5)
+const simIterations = ref(14)
+const simEdge       = ref(0.6)
+const simGranule    = ref(0.35)
+const simStrength   = ref(1.1)
+const simPaper      = ref(0.5)
 const wetness       = ref(0.85)
 const paperCut      = ref(0.04)
 const washScale     = ref(1.4)
@@ -224,6 +237,23 @@ function buildContour(seed: number): Graphics {
   return g
 }
 
+function inkwashParams(): InkwashParams {
+  return {
+    foliage: currentColor(),
+    accent: bloomColor.value,
+    drops: simDrops.value,
+    wetness: simWetness.value,
+    bleed: simBleed.value,
+    iterations: simIterations.value,
+    edgeDarken: simEdge.value,
+    granulation: simGranule.value,
+    strength: simStrength.value,
+    bloomStrength: bloomStrength.value,
+    bloomSize: bloomSize.value,
+    paperFibre: simPaper.value,
+  }
+}
+
 function layoutCell(index: number, cell: number): { x: number; y: number } {
   const col = index % GRID_COLS
   const row = Math.floor(index / GRID_COLS)
@@ -242,13 +272,23 @@ function rebuild() {
   const cool: [number, number, number] = [foliage[0] * 0.7, foliage[1] * 0.72, foliage[2] * 0.66] // darker/cooler
   const t0 = performance.now()
 
+  const ink = mode.value === 'sim' ? inkwashParams() : null
   for (let seed = 0; seed < n; seed++) {
     const cellRoot = markRaw(new Container())
-    cellRoot.addChild(buildWashLayer(seed * 7 + 1, foliage, wetness.value, 1.0))
-    if (tonal.value > 0) cellRoot.addChild(buildWashLayer(seed * 13 + 5, cool, wetness.value * tonal.value, 1.35))
-    const bloom = buildBloomSprite(seed)
-    if (bloom) cellRoot.addChild(bloom)
-    if (grainOn.value) cellRoot.addChild(buildGrainLayer())
+    if (ink) {
+      // Baked mini-inkwash: one Sprite from the fluid-sim canvas + contour.
+      const simCanvas = bakeInkwash(silhouettePolys, seed, SIM_SIZE, RASTER, ink)
+      const s = markRaw(new Sprite(Texture.from(simCanvas)))
+      s.anchor.set(0.5)
+      s.width = s.height = DISPLAY
+      cellRoot.addChild(s)
+    } else {
+      cellRoot.addChild(buildWashLayer(seed * 7 + 1, foliage, wetness.value, 1.0))
+      if (tonal.value > 0) cellRoot.addChild(buildWashLayer(seed * 13 + 5, cool, wetness.value * tonal.value, 1.35))
+      const bloom = buildBloomSprite(seed)
+      if (bloom) cellRoot.addChild(bloom)
+      if (grainOn.value) cellRoot.addChild(buildGrainLayer())
+    }
     if (contourOn.value) cellRoot.addChild(buildContour(seed))
     cellRoot.scale.set(inner / DISPLAY)
 
@@ -318,9 +358,10 @@ onUnmounted(() => { if (app.destroy) app.destroy(true, { children: true }) })
 
 watch([plantId, dilation], reloadAll)
 watch([
-  variation, wetness, paperCut, washScale, bleed, tonal,
+  mode, variation, wetness, paperCut, washScale, bleed, tonal,
   bloomColor, bloomStrength, bloomSize, bloomSoftness,
   grainOn, grainStrength, contourOn, contourWidth, contourWobble, contourAlpha, VARIANT_COUNT,
+  simDrops, simWetness, simBleed, simIterations, simEdge, simGranule, simStrength, simPaper,
 ], scheduleRebuild)
 </script>
 
@@ -341,15 +382,35 @@ watch([
         </select>
       </label>
       <div class="meta">{{ plants.length }} plants · {{ currentPlant()?.scientificName ?? '—' }}</div>
+      <label>mode
+        <select v-model="mode">
+          <option value="texture">real texture</option>
+          <option value="sim">mini-inkwash (sim)</option>
+        </select>
+      </label>
       <label>variants <input type="range" min="1" max="16" step="1" v-model.number="VARIANT_COUNT" /> {{ VARIANT_COUNT }}</label>
-      <label>variation <input type="range" min="0" max="1" step="0.05" v-model.number="variation" /> {{ variation.toFixed(2) }}</label>
 
-      <div class="group">watercolour (real texture)</div>
-      <label>wetness <input type="range" min="0" max="1" step="0.05" v-model.number="wetness" /> {{ wetness.toFixed(2) }}</label>
-      <label>paper cut <input type="range" min="0" max="0.4" step="0.01" v-model.number="paperCut" /> {{ paperCut.toFixed(2) }}</label>
-      <label>wash zoom <input type="range" min="0.5" max="3" step="0.1" v-model.number="washScale" /> {{ washScale.toFixed(1) }}</label>
-      <label>bleed <input type="range" min="0" max="20" step="1" v-model.number="bleed" /> {{ bleed }}</label>
-      <label>tonal depth <input type="range" min="0" max="1" step="0.05" v-model.number="tonal" /> {{ tonal.toFixed(2) }}</label>
+      <template v-if="mode === 'texture'">
+        <label>variation <input type="range" min="0" max="1" step="0.05" v-model.number="variation" /> {{ variation.toFixed(2) }}</label>
+        <div class="group">watercolour (real texture)</div>
+        <label>wetness <input type="range" min="0" max="1" step="0.05" v-model.number="wetness" /> {{ wetness.toFixed(2) }}</label>
+        <label>paper cut <input type="range" min="0" max="0.4" step="0.01" v-model.number="paperCut" /> {{ paperCut.toFixed(2) }}</label>
+        <label>wash zoom <input type="range" min="0.5" max="3" step="0.1" v-model.number="washScale" /> {{ washScale.toFixed(1) }}</label>
+        <label>bleed <input type="range" min="0" max="20" step="1" v-model.number="bleed" /> {{ bleed }}</label>
+        <label>tonal depth <input type="range" min="0" max="1" step="0.05" v-model.number="tonal" /> {{ tonal.toFixed(2) }}</label>
+      </template>
+
+      <template v-else>
+        <div class="group">mini-inkwash (fluid sim)</div>
+        <label>drops <input type="range" min="2" max="14" step="1" v-model.number="simDrops" /> {{ simDrops }}</label>
+        <label>wetness <input type="range" min="0.1" max="1" step="0.05" v-model.number="simWetness" /> {{ simWetness.toFixed(2) }}</label>
+        <label>bleed <input type="range" min="0" max="1" step="0.05" v-model.number="simBleed" /> {{ simBleed.toFixed(2) }}</label>
+        <label>iterations <input type="range" min="4" max="28" step="1" v-model.number="simIterations" /> {{ simIterations }}</label>
+        <label>edge dark <input type="range" min="0" max="2" step="0.1" v-model.number="simEdge" /> {{ simEdge.toFixed(1) }}</label>
+        <label>granulation <input type="range" min="0" max="1" step="0.05" v-model.number="simGranule" /> {{ simGranule.toFixed(2) }}</label>
+        <label>ink strength <input type="range" min="0.4" max="2.5" step="0.1" v-model.number="simStrength" /> {{ simStrength.toFixed(1) }}</label>
+        <label>paper <input type="range" min="0" max="1" step="0.05" v-model.number="simPaper" /> {{ simPaper.toFixed(2) }}</label>
+      </template>
 
       <div class="group">bloom</div>
       <label>bloom <input type="color" v-model="bloomColor" /> <code>{{ bloomColor }}</code></label>
