@@ -188,6 +188,23 @@ function scheduleRebuild() {
   rebuildTimer = setTimeout(rebuild, 90)
 }
 
+// ── drag-to-pan ────────────────────────────────────────────────────────────
+// The control panel overlays the left of the canvas; pan the grid out from under
+// it (and around) by dragging. rebuild() lays cells relative to the grid origin,
+// so grid.position (the pan offset) survives rebuilds.
+const PANEL_CLEAR = 400   // initial x so the left column clears the panel
+let dragging = false
+let lastX = 0, lastY = 0
+function onPanStart(e: PointerEvent) { dragging = true; lastX = e.clientX; lastY = e.clientY }
+function onPanMove(e: PointerEvent) {
+  if (!dragging || !grid.position) return
+  grid.position.x += e.clientX - lastX
+  grid.position.y += e.clientY - lastY
+  lastX = e.clientX; lastY = e.clientY
+}
+function onPanEnd() { dragging = false }
+function resetView() { if (grid.position) grid.position.set(PANEL_CLEAR, 12) }
+
 onMounted(async () => {
   app = markRaw(new Application())
   await app.init({ canvas: canvasEl.value!, resizeTo: canvasEl.value!.parentElement!, antialias: true, background: 0xf2ead4 })
@@ -200,6 +217,7 @@ onMounted(async () => {
   app.renderer.on('resize', rebuild)
 
   await reloadAll()
+  resetView()
 })
 
 onUnmounted(() => { if (app.destroy) app.destroy(true, { children: true }) })
@@ -214,7 +232,16 @@ watch([
 
 <template>
   <div class="wrap">
-    <canvas ref="canvasEl" />
+    <canvas
+      ref="canvasEl"
+      class="pan"
+      :class="{ dragging }"
+      @pointerdown="onPanStart"
+      @pointermove="onPanMove"
+      @pointerup="onPanEnd"
+      @pointerleave="onPanEnd"
+      @dblclick="resetView"
+    />
     <div class="hud"><div class="fps">{{ fps }} <span>fps</span></div><div>{{ frameMs }} ms</div></div>
 
     <div class="panel">
@@ -253,13 +280,15 @@ watch([
       <label>dilation <input type="range" min="0" max="14" step="1" v-model.number="dilation" /> {{ dilation }}</label>
     </div>
 
-    <div class="status">{{ status }}</div>
+    <div class="status">{{ status }} · drag to pan · double-click to reset</div>
   </div>
 </template>
 
 <style scoped>
 .wrap { position: relative; width: 100%; height: 100%; background: #f2ead4; }
 canvas { display: block; width: 100%; height: 100%; }
+canvas.pan { cursor: grab; }
+canvas.pan.dragging { cursor: grabbing; }
 .hud { position: absolute; top: 10px; right: 12px; font-family: monospace; font-size: 12px; color: #8a7f66; text-align: right; line-height: 1.5; pointer-events: none; }
 .fps { font-size: 16px; font-weight: bold; } .fps span { font-size: 11px; }
 .panel { position: absolute; top: 10px; left: 10px; display: flex; flex-direction: column; gap: 5px; font-family: monospace; font-size: 11px; color: #4a4030; background: rgba(255,255,255,0.85); padding: 10px 12px; border-radius: 6px; border: 1px solid #d8cdb4; max-height: calc(100% - 40px); overflow-y: auto; }
