@@ -17,6 +17,7 @@
 import { ref, reactive, onMounted, onUnmounted, markRaw, watch } from 'vue'
 import { Application, Assets, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import { drawRoughStroke, type RoughStrokeOptions } from '../lib/roughStroke'
+import { drawKinematicStroke, type KinematicStrokeOptions } from '../lib/kinematicStroke'
 import { PaperGrainFilter, PAPER_GRAIN_DEFAULTS } from '../lib/filters/PaperGrainFilter'
 import { useFps } from '../shared/useFps'
 import { pencilTestShapes } from '../fixtures/pencilTestShapes'
@@ -31,6 +32,10 @@ const opts = reactive({
   doubleStroke: true,
   strokeWidth: 2,
   showCrisp: true, // overlay the exact geometry in faint gray for comparison
+  generator: 'rough' as 'rough' | 'kinematic',
+  squiggle: 6,      // world-unit lateral deviation for the kinematic model
+  cpSpacing: 40,    // world-unit control-point spacing
+  overshoot: 4,     // world-unit endpoint overshoot (open paths)
 })
 
 // Paper-grain (graphite compositing) controls.
@@ -69,7 +74,7 @@ let camX = 0, camY = 0, zoom = 1
 let isPanning = false, panStart = { x: 0, y: 0 }
 
 function crispPath(g: Graphics, d: string): void {
-  // Minimal SVG-d replay for the faint reference overlay (M/L/C/Z only — matches shapes()).
+  // Minimal SVG-d replay for the faint reference overlay (M/L/C/Z only — matches pencilTestShapes()).
   const toks = d.match(/[MLCZ]|-?\d*\.?\d+/g) ?? []
   let i = 0
   const num = () => parseFloat(toks[i++])
@@ -98,7 +103,17 @@ function redraw(): void {
       world.addChild(ref)
     }
     const g = markRaw(new Graphics())
-    drawRoughStroke(g, s.d, ro, { color: s.color, width: opts.strokeWidth / zoom })
+    if (opts.generator === 'kinematic') {
+      const ko: KinematicStrokeOptions = {
+        squiggle: opts.squiggle,
+        cpSpacing: opts.cpSpacing,
+        seed: opts.seed,
+        overshoot: opts.overshoot,
+      }
+      drawKinematicStroke(g, s.d, ko, { color: s.color, width: opts.strokeWidth / zoom })
+    } else {
+      drawRoughStroke(g, s.d, ro, { color: s.color, width: opts.strokeWidth / zoom })
+    }
     world.addChild(g)
   }
 }
@@ -251,6 +266,13 @@ function reseed() { opts.seed = Math.floor(Math.random() * 100000) + 1 }
     <div class="panel">
       <div class="title">Sketch Style · rough.js generator → Pixi Graphics</div>
 
+      <label>Generator
+        <select v-model="opts.generator">
+          <option value="rough">rough.js (wobble)</option>
+          <option value="kinematic">kinematic (min-jerk)</option>
+        </select>
+      </label>
+
       <label>Roughness <b>{{ opts.roughness.toFixed(2) }}</b>
         <input type="range" min="0" max="4" step="0.05" v-model.number="opts.roughness" />
       </label>
@@ -263,6 +285,18 @@ function reseed() { opts.seed = Math.floor(Math.random() * 100000) + 1 }
       <label>Seed <b>{{ opts.seed }}</b>
         <input type="range" min="1" max="200" step="1" v-model.number="opts.seed" />
       </label>
+
+      <template v-if="opts.generator === 'kinematic'">
+        <label>Squiggle <b>{{ opts.squiggle.toFixed(1) }}</b>
+          <input type="range" min="0" max="30" step="0.5" v-model.number="opts.squiggle" />
+        </label>
+        <label>CP spacing <b>{{ opts.cpSpacing.toFixed(0) }}</b>
+          <input type="range" min="8" max="120" step="2" v-model.number="opts.cpSpacing" />
+        </label>
+        <label>Overshoot <b>{{ opts.overshoot.toFixed(1) }}</b>
+          <input type="range" min="0" max="20" step="0.5" v-model.number="opts.overshoot" />
+        </label>
+      </template>
 
       <div class="toggles">
         <label class="chk"><input type="checkbox" v-model="opts.doubleStroke" /> Double stroke</label>
