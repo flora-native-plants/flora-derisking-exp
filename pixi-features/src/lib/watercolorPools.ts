@@ -29,6 +29,8 @@ export interface WatercolorPoolParams {
   bloomStrength: number    // 0..1 — bloom pool opacity (0 = no bloom)
   bloomSize: number        // fraction of plant radius
   softness: number         // 0..1 — pool edge falloff width
+  tonalDepth: number       // 0..1 — spread of light-centre → dark-lobe values (volume)
+  tempShift: number        // 0..1 — warm-highlight vs cool-shadow colour split
 }
 
 const LO_FREQ = 0.012      // pool-boundary warp frequency (large patches)
@@ -60,6 +62,50 @@ function scaleRgb(rgb: [number, number, number], f: number): [number, number, nu
   ]
 }
 
+type RGB = [number, number, number]
+
+function rgbToHsl(rgb: RGB): [number, number, number] {
+  const r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255
+  const max = Math.max(r, g, b), min = Math.min(r, g, b)
+  const l = (max + min) / 2
+  if (max === min) return [0, 0, l]
+  const d = max - min
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+  let h = 0
+  if (max === r) h = (g - b) / d + (g < b ? 6 : 0)
+  else if (max === g) h = (b - r) / d + 2
+  else h = (r - g) / d + 4
+  return [h / 6, s, l]
+}
+
+function hslToRgb(h: number, s: number, l: number): RGB {
+  if (s === 0) { const v = Math.round(l * 255); return [v, v, v] }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s
+  const p = 2 * l - q
+  const hue = (t: number) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1
+    if (t < 1 / 6) return p + (q - p) * 6 * t
+    if (t < 1 / 2) return q
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+    return p
+  }
+  return [Math.round(hue(h + 1 / 3) * 255), Math.round(hue(h) * 255), Math.round(hue(h - 1 / 3) * 255)]
+}
+
+/**
+ * Shift a pigment toward warm-highlight (t>0) or cool-shadow (t<0): warm rotates
+ * hue toward yellow + lightens + desaturates a touch; cool rotates toward
+ * blue-green + darkens + saturates. `amt` scales the whole effect (tempShift).
+ */
+function tempTint(rgb: RGB, t: number, amt: number): RGB {
+  const [h, s, l] = rgbToHsl(rgb)
+  const k = t * amt
+  const h2 = (h - 0.012 * k + 1) % 1                       // warm→yellow-green, cool→blue-green (subtle)
+  const l2 = Math.max(0, Math.min(1, l + 0.14 * k))         // warm lighter, cool darker (the main move)
+  const s2 = Math.max(0, Math.min(1, s + 0.07 * Math.max(0, -k))) // cool a touch richer; warm keeps sat (no tan)
+  return hslToRgb(h2, s2, l2)
+}
+
 function smoothstep(e0: number, e1: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)))
   return t * t * (3 - 2 * t)
@@ -68,7 +114,7 @@ function smoothstep(e0: number, e1: number, x: number): number {
 interface Pool {
   ax: number; ay: number; radius: number
   rgb: [number, number, number]
-  density: number; edge: number
+  density: number; edge: number; softness: number
 }
 
 /** Plant bounding box (in canvas px) from RASTER-space polygons. */
@@ -84,35 +130,48 @@ function plantBox(polys: Vec2[][], k: number): { cx: number; cy: number; radius:
   return { cx, cy, radius }
 }
 
-/** Build the seeded pool list: a base wash, N foliage pools, and one bloom pool. */
+/** Build the seeded pool list: a pale base wash, alternating highlight/shadow
+ *  pigment pools (tonal + temperature structure), and one bloom pool. */
 function buildPools(seed: number, box: { cx: number; cy: number; radius: number }, p: WatercolorPoolParams): Pool[] {
   const rng = mulberry32(seed * 2654435761 + 1)
   const foliage = hexToRgb(p.foliage)
   const accent = hexToRgb(p.accent)
   const R = box.radius
   const scatter = p.variationStrength * R
+  const depth = p.tonalDepth
   const pools: Pool[] = []
 
-  // Base wash — covers the whole shape, faint, gentle rim.
-  pools.push({ ax: box.cx, ay: box.cy, radius: R * 1.15, rgb: foliage, density: p.baseStrength * 0.6, edge: p.edgeDarkening * 0.5 })
+  // Base wash — pale green ground the pools sit on; light centre, soft.
+  pools.push({
+    ax: box.cx, ay: box.cy, radius: R * 1.12,
+    rgb: tempTint(foliage, +1, p.tempShift * 0.3),
+    density: p.baseStrength * (0.5 - depth * 0.2), edge: p.edgeDarkening * 0.4,
+    softness: p.softness,
+  })
 
-  // Foliage pigment pools — scattered, darker, strong rim.
+  // Pigment pools — alternate warm HIGHLIGHT (pale, soft) and cool SHADOW
+  // (dark, hard dried rim) so the canopy has value + temperature structure.
   const n = Math.max(2, Math.min(4, Math.round(p.poolCount)))
   for (let i = 0; i < n; i++) {
     const ang = rng() * Math.PI * 2
     const dist = rng() * scatter
-    const light = 0.7 + rng() * 0.4 // 0.7..1.1 lightness jitter
+    const shadow = rng() < 0.5
+    const jitter = 1 + (rng() - 0.5) * 0.15
+    const base = shadow
+      ? scaleRgb(tempTint(foliage, -1, p.tempShift), (1 - depth * 0.45) * jitter) // cool + darker
+      : scaleRgb(tempTint(foliage, +1, p.tempShift), (1 + depth * 0.25) * jitter) // warm + lighter
     pools.push({
       ax: box.cx + Math.cos(ang) * dist,
       ay: box.cy + Math.sin(ang) * dist,
-      radius: R * (0.45 + rng() * 0.4),
-      rgb: scaleRgb(foliage, light),
-      density: 0.4 + rng() * 0.3,
-      edge: p.edgeDarkening,
+      radius: R * (0.4 + rng() * 0.4),
+      rgb: base,
+      density: shadow ? 0.45 + depth * 0.35 : 0.3 + rng() * 0.2,
+      edge: shadow ? Math.min(1, p.edgeDarkening + 0.3) : p.edgeDarkening * 0.6,
+      softness: shadow ? p.softness * 0.6 : p.softness,   // shadow = harder dried rim
     })
   }
 
-  // Bloom pool — accent colour, off-centre, hardest rim (back-run character).
+  // Bloom pool — accent colour, off-centre, hard dried rim (back-run character).
   if (p.bloomStrength > 0) {
     const ang = rng() * Math.PI * 2
     const dist = (0.15 + rng() * 0.25) * R + rng() * scatter * 0.5
@@ -123,6 +182,7 @@ function buildPools(seed: number, box: { cx: number; cy: number; radius: number 
       rgb: accent,
       density: p.bloomStrength,
       edge: Math.min(1, p.edgeDarkening + 0.25),
+      softness: p.softness * 0.7,
     })
   }
   return pools
@@ -137,7 +197,7 @@ function poolAlpha(pool: Pool, px: number, py: number, lo: NoiseFn, hi: NoiseFn,
   // Warp the boundary with low-freq noise (offset by anchor so each pool differs).
   const bn = (lo((px + pool.ax) * LO_FREQ, (py + pool.ay) * LO_FREQ) + 1) * 0.5 // [0,1]
   dNorm *= 1 + p.boundaryWobble * (bn - 0.5) * 1.4
-  const cov = 1 - smoothstep(1 - p.softness, 1 + 0.12, dNorm)
+  const cov = 1 - smoothstep(1 - pool.softness, 1 + 0.12, dNorm)
   if (cov <= 0) return 0
   // Edge-darkening: density rises toward the rim.
   const rim = 1 + pool.edge * smoothstep(RIM_START, 1.0, Math.min(dNorm, 1))
@@ -183,8 +243,12 @@ export function renderVariantInterior(
         oB = oB * (1 - a) + pool.rgb[2] * a
         oA = oA * (1 - a) + a
       }
+      // Canopy-level ambient shade: darken toward the outer edge so the whole
+      // symbol reads as a rounded volume, not a flat disc (value structure).
+      const dc = Math.sqrt((px - box.cx) ** 2 + (py - box.cy) ** 2) / box.radius
+      const shade = 1 - params.tonalDepth * 0.3 * smoothstep(0.5, 1.05, dc)
       const idx = (py * size + px) * 4
-      d[idx] = oR; d[idx + 1] = oG; d[idx + 2] = oB; d[idx + 3] = Math.round(oA * 255)
+      d[idx] = oR * shade; d[idx + 1] = oG * shade; d[idx + 2] = oB * shade; d[idx + 3] = Math.round(oA * 255)
     }
   }
   ctx.putImageData(img, 0, 0)
