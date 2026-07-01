@@ -42,4 +42,12 @@ assert.ok(a.every((o) => KNOWN.has(o.op)), 'every op must be move/lineTo/bcurveT
 const open = kinematicOpsForPath(D_OPEN, base)
 assert.ok(open.length > 0 && open[0].op === 'move', 'open path must produce ops')
 
-console.log('OK: kinematic cache contract holds (6 assertions)')
+// 7. Changing cpSpacing changes the geometry (closed path).
+const diffSpacing = kinematicOpsForPath(D_CLOSED, { ...base, cpSpacing: 80 })
+assert.notDeepStrictEqual(diffSpacing, a, 'different cpSpacing must change geometry')
+
+// 8. Changing overshoot changes OPEN-path geometry (overshoot only applies to open paths).
+const diffOvershoot = kinematicOpsForPath(D_OPEN, { ...base, overshoot: 12 })
+assert.notDeepStrictEqual(diffOvershoot, open, 'different overshoot must change open-path geometry')
+
+console.log('OK: kinematic cache contract holds (8 assertions)')

@@ -47,7 +47,11 @@ function cubicAt(p0: Pt, c1: Pt, c2: Pt, p1: Pt, t: number): Pt {
   ]
 }
 
-/** Flatten an M/L/C/Z path `d` into one polyline per subpath. */
+/**
+ * Flatten an M/L/C/Z path `d` into one polyline per subpath.
+ * NOTE: subset parser — absolute M/L/C/Z only (matches pencilTestShapes). It does
+ * NOT handle relative commands or H/V/A/Q; broaden it before porting to flora-studio.
+ */
 function flattenPath(d: string): Pt[][] {
   const toks = d.match(/[MLCZ]|-?\d*\.?\d+/g) ?? []
   let i = 0
@@ -105,6 +109,7 @@ function resample(pts: Pt[], spacing: number): Pt[] {
  */
 function perturb(cps: Pt[], amp: number, rng: () => number, closed: boolean): Pt[] {
   const n = cps.length
+  if (n <= 1) return cps.slice() // avoid NaN from Math.sin(PI * i/(n-1)) when n===1
   return cps.map((p, i) => {
     const edge = closed ? 1 : Math.sin(Math.PI * (i / (n - 1))) // 0 at ends, 1 mid
     const a = cps[Math.max(0, i - 1)], b = cps[Math.min(n - 1, i + 1)]
@@ -146,11 +151,11 @@ function catmullRomOps(cps: Pt[], out: StrokeOp[], closed: boolean): void {
 
 /** Generate (or fetch cached) min-jerk op-list for an SVG path `d` string. */
 export function kinematicOpsForPath(d: string, o: KinematicStrokeOptions): StrokeOp[] {
-  const key = cacheKey(d, o)
+  const seed = o.seed || 1 // 0 disallowed — mirrors roughStroke's rule
+  const key = cacheKey(d, { ...o, seed })
   const hit = _cache.get(key)
   if (hit) return hit
 
-  const seed = o.seed || 1 // 0 disallowed — mirrors roughStroke's rule
   const subpaths = flattenPath(d)
   const ops: StrokeOp[] = []
   for (let si = 0; si < subpaths.length; si++) {
