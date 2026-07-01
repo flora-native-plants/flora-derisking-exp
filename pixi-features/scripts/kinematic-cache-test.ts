@@ -50,4 +50,19 @@ assert.notDeepStrictEqual(diffSpacing, a, 'different cpSpacing must change geome
 const diffOvershoot = kinematicOpsForPath(D_OPEN, { ...base, overshoot: 12 })
 assert.notDeepStrictEqual(diffOvershoot, open, 'different overshoot must change open-path geometry')
 
-console.log('OK: kinematic cache contract holds (8 assertions)')
+// 9. A closed bezier path whose authored `d` repeats its start vertex must NOT leave a
+//    coincident seam control point (regression guard for the planting-bed kink).
+const BED = 'M -180 -40 C -140 -110, -40 -120, 30 -80 C 90 -48, 120 20, 70 70 C 20 118, -110 110, -170 60 C -210 26, -220 10, -180 -40 Z'
+const bedOps = kinematicOpsForPath(BED, base)
+const bedAnchors: Array<[number, number]> = []
+for (const o of bedOps) {
+  if (o.op === 'move') bedAnchors.push([o.data[0], o.data[1]])
+  else if (o.op === 'bcurveTo') bedAnchors.push([o.data[4], o.data[5]])
+}
+let minSeg = Infinity
+for (let i = 1; i < bedAnchors.length; i++) {
+  minSeg = Math.min(minSeg, Math.hypot(bedAnchors[i][0] - bedAnchors[i - 1][0], bedAnchors[i][1] - bedAnchors[i - 1][1]))
+}
+assert.ok(minSeg > 1e-3, `closed bezier must not produce a coincident seam CP (min segment ${minSeg})`)
+
+console.log('OK: kinematic cache contract holds (9 assertions)')

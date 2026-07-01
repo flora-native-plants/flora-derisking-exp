@@ -5,7 +5,7 @@
 //
 // KEY CONTRACT (identical to roughStroke.ts):
 //   - Geometry is generated ONCE in world coordinates with a FIXED seed.
-//   - It is cached by (squiggle, cpSpacing, seed, overshoot, dHash).
+//   - It is cached by (squiggle, cpSpacing, seed, overshoot) plus the raw `d` string.
 //   - There is NO zoom parameter: zooming only scales the parent container, so
 //     the wobble scales with the drawing and never re-randomizes or crawls.
 import type { Graphics } from 'pixi.js'
@@ -22,7 +22,11 @@ export interface KinematicStrokeOptions {
   overshoot: number
 }
 
-/** Op-list element — shape matches roughStroke's replay input exactly. */
+/**
+ * Op-list element — shape matches roughStroke's replay input exactly.
+ * Kinematic strokes only ever emit `move` and `bcurveTo`; `lineTo` is retained for
+ * op-list parity with roughStroke (shared replay code) but is never produced here.
+ */
 export interface StrokeOp { op: 'move' | 'lineTo' | 'bcurveTo'; data: number[] }
 
 type Pt = [number, number]
@@ -31,6 +35,9 @@ type Pt = [number, number]
 const BEZIER_FLATTEN_STEPS = 16
 // Catmull-Rom → cubic-bezier tangent scale (the standard 1/6 factor).
 const CR_TANGENT = 1 / 6
+// Points within this distance (world units) of the subpath start count as the
+// closing vertex and are dropped, so a closed path never keeps a coincident seam CP.
+const SEAM_EPS = 1e-6
 
 const _cache = new Map<string, StrokeOp[]>()
 
@@ -82,6 +89,7 @@ function flattenPath(d: string): Pt[][] {
 /** Resample a polyline to control points spaced ~`spacing` apart by arc length. */
 function resample(pts: Pt[], spacing: number): Pt[] {
   if (pts.length < 2) return pts.slice()
+  if (spacing <= 0) return pts.slice() // avoid infinite loop on non-positive spacing
   const out: Pt[] = [pts[0]]
   let acc = 0
   for (let i = 1; i < pts.length; i++) {
@@ -149,6 +157,22 @@ function catmullRomOps(cps: Pt[], out: StrokeOp[], closed: boolean): void {
   }
 }
 
+/**
+ * Drop every trailing vertex coincident (within SEAM_EPS) with the subpath start,
+ * so a closed path built from an authored `d` that repeats its first vertex (and/or
+ * a `Z`) does not leave two coincident control points at the seam.
+ */
+function stripClosingDuplicates(poly: Pt[]): Pt[] {
+  const first = poly[0]
+  let end = poly.length
+  while (
+    end > 1 &&
+    Math.abs(poly[end - 1][0] - first[0]) < SEAM_EPS &&
+    Math.abs(poly[end - 1][1] - first[1]) < SEAM_EPS
+  ) end--
+  return poly.slice(0, end)
+}
+
 /** Generate (or fetch cached) min-jerk op-list for an SVG path `d` string. */
 export function kinematicOpsForPath(d: string, o: KinematicStrokeOptions): StrokeOp[] {
   const seed = o.seed || 1 // 0 disallowed — mirrors roughStroke's rule
@@ -165,7 +189,7 @@ export function kinematicOpsForPath(d: string, o: KinematicStrokeOptions): Strok
       poly[0][0] === poly[poly.length - 1][0] &&
       poly[0][1] === poly[poly.length - 1][1]
     const rng = alea(`${seed}:${si}:${key}`)
-    let cps = resample(closed ? poly.slice(0, -1) : poly, o.cpSpacing)
+    let cps = resample(closed ? stripClosingDuplicates(poly) : poly, o.cpSpacing)
     cps = perturb(cps, o.squiggle, rng, closed)
     if (!closed && o.overshoot > 0 && cps.length >= 2) cps = applyOvershoot(cps, o.overshoot)
     catmullRomOps(cps, ops, closed)
