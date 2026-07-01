@@ -36,6 +36,7 @@ const opts = reactive({
   squiggle: 6,      // world-unit lateral deviation for the kinematic model
   cpSpacing: 40,    // world-unit control-point spacing
   overshoot: 4,     // world-unit endpoint overshoot (open paths)
+  cornerAngle: 35, // turn angle (deg) above which a vertex is a crisp corner
 })
 
 // Paper-grain (graphite compositing) controls.
@@ -109,6 +110,7 @@ function redraw(): void {
         cpSpacing: opts.cpSpacing,
         seed: opts.seed,
         overshoot: opts.overshoot,
+        cornerAngle: opts.cornerAngle,
       }
       drawKinematicStroke(g, s.d, ko, { color: s.color, width: opts.strokeWidth / zoom })
     } else {
@@ -295,6 +297,9 @@ function reseed() { opts.seed = Math.floor(Math.random() * 100000) + 1 }
         </label>
         <label>Overshoot <b>{{ opts.overshoot.toFixed(1) }}</b>
           <input type="range" min="0" max="20" step="0.5" v-model.number="opts.overshoot" />
+        </label>
+        <label>Corner angle <b>{{ opts.cornerAngle }}°</b>
+          <input type="range" min="0" max="90" step="1" v-model.number="opts.cornerAngle" />
         </label>
       </template>
 

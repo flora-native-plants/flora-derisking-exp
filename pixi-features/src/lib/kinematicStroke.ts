@@ -5,7 +5,7 @@
 //
 // KEY CONTRACT (identical to roughStroke.ts):
 //   - Geometry is generated ONCE in world coordinates with a FIXED seed.
-//   - It is cached by (squiggle, cpSpacing, seed, overshoot) plus the raw `d` string.
+//   - It is cached by (squiggle, cpSpacing, seed, overshoot, cornerAngle) plus the raw `d` string.
 //   - There is NO zoom parameter: zooming only scales the parent container, so
 //     the wobble scales with the drawing and never re-randomizes or crawls.
 import type { Graphics } from 'pixi.js'
@@ -20,6 +20,8 @@ export interface KinematicStrokeOptions {
   seed: number
   /** Endpoint overshoot in world units for open paths (min-jerk hallmark). 0 = none. */
   overshoot: number
+  /** Turn angle (degrees) above which a vertex is a hard corner (spline restarts there). */
+  cornerAngle: number
 }
 
 /**
@@ -51,7 +53,7 @@ export const BOW_CAP = 14
 const _cache = new Map<string, StrokeOp[]>()
 
 function cacheKey(d: string, o: KinematicStrokeOptions): string {
-  return `${o.squiggle}|${o.cpSpacing}|${o.seed}|${o.overshoot}|${d}`
+  return `${o.squiggle}|${o.cpSpacing}|${o.seed}|${o.overshoot}|${o.cornerAngle}|${d}`
 }
 
 function cubicAt(p0: Pt, c1: Pt, c2: Pt, p1: Pt, t: number): Pt {
@@ -274,17 +276,29 @@ export function kinematicOpsForPath(d: string, o: KinematicStrokeOptions): Strok
 
   const subpaths = flattenPath(d)
   const ops: StrokeOp[] = []
+  const cornerRad = (o.cornerAngle * Math.PI) / 180
   for (let si = 0; si < subpaths.length; si++) {
-    const poly = subpaths[si]
-    const closed =
-      poly.length > 2 &&
-      poly[0][0] === poly[poly.length - 1][0] &&
-      poly[0][1] === poly[poly.length - 1][1]
+    const raw = subpaths[si]
+    const isClosedSub =
+      raw.length > 2 &&
+      raw[0][0] === raw[raw.length - 1][0] &&
+      raw[0][1] === raw[raw.length - 1][1]
+    const poly = isClosedSub ? stripClosingDuplicates(raw) : raw
     const rng = alea(`${seed}:${si}:${key}`)
-    let cps = resample(closed ? stripClosingDuplicates(poly) : poly, o.cpSpacing)
-    cps = perturb(cps, o.squiggle, rng, closed)
-    if (!closed && o.overshoot > 0 && cps.length >= 2) cps = applyOvershoot(cps, o.overshoot)
-    catmullRomOps(cps, ops, closed)
+    const { runs, loop } = splitAtCorners(poly, isClosedSub, cornerRad)
+    for (const run of runs) {
+      let cps = resample(run, o.cpSpacing)
+      const straight = isStraightRun(run)
+      const amp = straight ? o.squiggle * STRAIGHT_SQUIGGLE_SCALE : o.squiggle
+      cps = perturb(cps, amp, rng, loop)
+      if (straight) {
+        const L = Math.hypot(run[run.length - 1][0] - run[0][0], run[run.length - 1][1] - run[0][1])
+        const bowSign = rng() < 0.5 ? -1 : 1
+        cps = bowRun(cps, bowSign * Math.min(L / BOW_DIVISOR, BOW_CAP))
+      }
+      if (!loop && o.overshoot > 0 && cps.length >= 2) cps = applyOvershoot(cps, o.overshoot)
+      catmullRomOps(cps, ops, loop)
+    }
   }
   _cache.set(key, ops)
   return ops
