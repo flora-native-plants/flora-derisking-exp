@@ -129,6 +129,7 @@ in float aPressure;  // seeded pressure 0..1
 out vec2 vUV;
 out vec2 vWorld;
 out float vPressure;
+out vec2 vTangent;   // world-space stroke direction (for directional grain)
 uniform mat3 uProjectionMatrix;
 uniform mat3 uWorldTransformMatrix;
 uniform mat3 uTransformMatrix;
@@ -152,6 +153,7 @@ void main() {
   vUV = aUV;
   vWorld = pos;
   vPressure = aPressure;
+  vTangent = vec2(aNormal.y, -aNormal.x); // perpendicular to the normal = stroke tangent
 }`
 
 const FRAG = `#version 300 es
@@ -159,6 +161,7 @@ precision highp float;
 in vec2 vUV;        // (s world, side 0..1)
 in vec2 vWorld;
 in float vPressure;
+in vec2 vTangent;   // world-space stroke direction
 out vec4 finalColor;
 
 uniform sampler2D uGrainTex; // HIGH-frequency deposition grain (not the broad relief tile)
@@ -169,6 +172,8 @@ uniform vec3  uInk;          // warm graphite (NOT uColor — that name is Pixi'
 uniform float uToneAmp;      // 0..1 tone (pressure) variation
 uniform float uTooth;        // 0..1 paper-tooth breakup strength
 uniform float uToothContrast;// 0 even fine tooth -> 1 hard pepper-fleck skips
+uniform float uGrainStreak;  // 0 isotropic speckle -> 1 grain stretched into striations along travel
+uniform float uBuildup;      // 0..1 tonal build-up: darker mid-stroke, lighter toward the ends
 uniform float uEdgeSoft;     // 0..1 edge erosion amount (position, not transition width)
 
 float hash11(float p){ p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
@@ -187,16 +192,23 @@ void main(){
   float edge = abs(side);               // 0 centre -> 1 edge
   float pressure = vPressure;
 
-  float g = grainField(vWorld / uGrainFine);
+  // Directional grain: sample the tile in the stroke's tangent/normal frame, stretched ALONG travel
+  // so the isotropic tile reads as striations following the stroke (the #1 tell vs real pencil).
+  vec2 tgt = normalize(vTangent + vec2(1e-5, 0.0));
+  vec2 nrm = vec2(-tgt.y, tgt.x);
+  float streak = 1.0 + uGrainStreak * 3.5;                 // >1 elongates features along the stroke
+  vec2 gUV = vec2(dot(vWorld, tgt) / streak, dot(vWorld, nrm) * mix(1.0, 1.6, uGrainStreak)) / uGrainFine;
+  float g = grainField(gUV);
 
   // Q3 tone: perceptual-gamma'd pressure (alpha 0.6 vs 1.0 barely reads on near-white w/ multiply)
   float tone = pow(mix(1.0 - uToneAmp, 1.0, pressure), 1.6);
 
   // Q1 tooth: near-binary deposit per tooth cell, AA'd; light pressure -> more skips.
   // uToothContrast stretches the fine grain toward bimodal + tightens the threshold band, taking
-  // the read from "even fine tooth" (0) to "pepper-fleck skips" (1).
+  // the read from "even fine tooth" (0) to "pepper-fleck skips" (1). Edge-biased: the threshold
+  // rises toward the ribbon edges, so graphite skips there (ragged edge) over a more solid core.
   float gc = clamp((g - 0.5) * (1.0 + uToothContrast * 3.0) + 0.5, 0.0, 1.0);
-  float thresh = mix(0.72, 0.18, pressure);
+  float thresh = mix(0.72, 0.18, pressure) + 0.28 * edge * edge;
   float wth = min(fwidth(gc), 0.2) + mix(0.06, 0.006, uToothContrast);
   float deposit = smoothstep(thresh - wth, thresh + wth, gc);
   float tooth = mix(1.0, deposit, uTooth * (1.0 - 0.6 * pressure));
@@ -211,10 +223,14 @@ void main(){
   float d = min(s, uRunLen - s);
   float fade = smoothstep(0.0, 1.5 / uZoom, d);
 
-  // subtle darker core
+  // Tonal build-up: gentle darkening toward mid-stroke, lighter toward the ends (real marks build
+  // up in the middle of the arc). Broader than the tip fade.
+  float buildup = mix(1.0 - uBuildup, 1.0, smoothstep(0.0, uRunLen * 0.4, d));
+
+  // subtle darker core (across the width)
   float core = mix(1.0, 1.12, 1.0 - edge);
 
-  float a = clamp(tone * tooth * cover * fade * core, 0.0, 1.0);
+  float a = clamp(tone * tooth * cover * fade * core * buildup, 0.0, 1.0);
   finalColor = vec4(uInk * a, a);      // premultiplied; mesh uses multiply blend
 }`
 
@@ -233,6 +249,8 @@ export interface StrokeRibbonParams {
   toneAmp: number
   tooth: number
   toothContrast: number // 0 even fine tooth -> 1 hard pepper-fleck skips
+  grainStreak: number   // 0 isotropic -> 1 directional striations along the stroke
+  buildup: number       // 0..1 tonal build-up toward mid-stroke
   edgeSoft: number
   seed: number       // pressure-field seed (per-run variation is folded in by run index)
 }
@@ -246,6 +264,8 @@ export const STROKE_RIBBON_DEFAULTS: StrokeRibbonParams = {
   toneAmp: 0.35,             // gentle tone swing (0.55 read as a sinusoidal fade)
   tooth: 0.85,
   toothContrast: 0.5,        // midway — some fleck character without going harsh
+  grainStreak: 0.6,          // directional striations along the stroke (vs isotropic speckle)
+  buildup: 0.25,             // gentle mid-stroke tonal build-up
   edgeSoft: 0.5,
   seed: 42,
 }
@@ -277,6 +297,8 @@ export function buildStrokeMeshes(
       uToneAmp:   { value: p.toneAmp, type: 'f32' },
       uTooth:     { value: p.tooth, type: 'f32' },
       uToothContrast: { value: p.toothContrast, type: 'f32' },
+      uGrainStreak: { value: p.grainStreak, type: 'f32' },
+      uBuildup:   { value: p.buildup, type: 'f32' },
       uEdgeSoft:  { value: p.edgeSoft, type: 'f32' },
     })
     const shader = new Shader({ glProgram: program(), resources: { uGrainTex: grain, strokeUniforms: uniforms } })
