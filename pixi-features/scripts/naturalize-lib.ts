@@ -13,22 +13,29 @@ const TWO_THIRDS = 2 / 3
  * structured segments, so this lives in the harness, not in kinematicStroke.
  */
 export function normalizePath(d: string): string {
-  return svgpath(d)
+  // Build the output EXPLICITLY, one command per segment. svgpath's toString collapses
+  // consecutive same-commands into SVG polyline shorthand (`L x1 y1 x2 y2 ...`), which the
+  // generators' one-pair-per-command parsers silently truncate. Emitting each segment on its
+  // own avoids that entirely and lets us convert H/V->L and Q->C in the same pass.
+  const parts: string[] = []
+  svgpath(d)
     .unshort() // S/T -> C/Q
     .unarc()   // A -> C
     .abs()     // relative -> absolute
     .iterate((seg, _i, x, y) => {
       const c = seg[0]
-      if (c === 'H') return [['L', seg[1], y]]
-      if (c === 'V') return [['L', x, seg[1]]]
-      if (c === 'Q') {
+      if (c === 'M') parts.push(`M ${seg[1]} ${seg[2]}`)
+      else if (c === 'L') parts.push(`L ${seg[1]} ${seg[2]}`)
+      else if (c === 'H') parts.push(`L ${seg[1]} ${y}`)
+      else if (c === 'V') parts.push(`L ${x} ${seg[1]}`)
+      else if (c === 'C') parts.push(`C ${seg[1]} ${seg[2]} ${seg[3]} ${seg[4]} ${seg[5]} ${seg[6]}`)
+      else if (c === 'Q') {
         const qx = seg[1] as number, qy = seg[2] as number, ex = seg[3] as number, ey = seg[4] as number
-        return [['C', x + TWO_THIRDS * (qx - x), y + TWO_THIRDS * (qy - y),
-          ex + TWO_THIRDS * (qx - ex), ey + TWO_THIRDS * (qy - ey), ex, ey]]
-      }
-      return undefined // keep M/L/C/Z as-is
+        parts.push(`C ${x + TWO_THIRDS * (qx - x)} ${y + TWO_THIRDS * (qy - y)} ${ex + TWO_THIRDS * (qx - ex)} ${ey + TWO_THIRDS * (qy - ey)} ${ex} ${ey}`)
+      } else if (c === 'Z' || c === 'z') parts.push('Z')
+      return undefined
     })
-    .toString()
+  return parts.join(' ')
 }
 
 export type Op = { op: string; data: number[] }
