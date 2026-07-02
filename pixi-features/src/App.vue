@@ -40,6 +40,7 @@ const groups: Group[] = [
     tabs: [
       { id: 'pen',         label: 'Pen Tool',          comp: A('./tabs/TabPenTool.vue') },
       { id: 'sketch',      label: 'Sketch Style (rough.js)', comp: A('./tabs/TabSketchStyle.vue') },
+      { id: 'ribbon',      label: 'Pencil Ribbon (mesh)', comp: A('./tabs/TabPencilRibbon.vue') },
       { id: 'freehand',    label: 'Freehand',          comp: A('./tabs/TabFreehand.vue') },
       { id: 'knife',       label: 'Knife Tool',        comp: A('./tabs/TabKnife.vue') },
       { id: 'bool',        label: 'Boolean Ops',       comp: A('./tabs/TabBooleanOps.vue') },
