@@ -109,6 +109,18 @@ float plateau(float d, float lo, float hi){
   return mix(lo, d, t);   // below lo -> flat plateau at lo; above hi -> unchanged
 }
 
+// A secondary FREE-FLOATING glaze puddle centred at c (radius r): its own drying field
+// -> bands, wetness-gated. Its density ADDS to the primary (overlap darkening — Fable's
+// strongest cue) and its bands cross the primary's (a single field's bands never cross).
+float secondaryGlaze(vec2 uv, vec2 c, float r, float seedOff){
+  float warp = uWarpAmp * fbm(uv*1.6 + seedOff, 3);
+  float wet = 1.0 - smoothstep(r * 0.35, r, length(uv - c) + warp * r); // 1 near centre -> 0 at r
+  if(wet <= 0.001) return 0.0;
+  float Tg = wet + uFbmB * fbm(uv*6.0 + seedOff + 3.7, 4);
+  float bandsG = bandTerm(Tg, uEdgeWidth, int(uBandCount));
+  return wet * (uBaseDensity * 0.45 + bandsG * uBandGain);
+}
+
 void main(){
   // The filter INPUT (uTexture) IS the SDF sprite, so vTextureCoord maps to it directly.
   vec2 uv = vTextureCoord;
@@ -130,6 +142,13 @@ void main(){
   // weak WARM mask rim: rimField ~0 at the silhouette edge -> 1 by ~10px inside.
   float rimBand = (1.0 - rimField) * (0.5 + 0.5 * snoise(uv*20.0 + sp));
   dens += 0.4 * rimBand;
+
+  // 3b) LAYERED GLAZES — two free-floating secondary puddles (seeded positions). Their
+  // density adds (overlap darkening) and their bands cross the primary's -> paint process.
+  vec2 c1 = vec2(0.60, 0.44) + 0.12 * vec2(snoise(vec2(sp, 1.0)), snoise(vec2(sp, 2.0)));
+  vec2 c2 = vec2(0.42, 0.60) + 0.12 * vec2(snoise(vec2(sp, 3.0)), snoise(vec2(sp, 4.0)));
+  dens += secondaryGlaze(uv, c1, 0.34, sp + 11.0);
+  dens += secondaryGlaze(uv, c2, 0.27, sp + 23.0);
 
   // 4) pigment split by the SMOOTH drying field (sdfN, not noisy T) so hue is calm —
   // warm where it dried last (centre), green at the edges — no fine hue mottle.
