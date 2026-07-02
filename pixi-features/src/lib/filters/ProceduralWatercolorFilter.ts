@@ -6,6 +6,7 @@ import { pigmentKS } from '../watercolor/pigmentKS'
 export interface ProcWaterOpts {
   sdf: Texture
   sdfTexelWorldSize: number   // world units per SDF texel (crown-radius scaling)
+  interiorScale: number       // deepest interior distance (world units) — drying-field denom
   seed: number
   offsetBase: number          // >= lobe amplitude, in the SAME units as the SDF sample
   offsetNoiseAmp: number      // a1: 8-12% crown radius
@@ -27,18 +28,21 @@ export interface ProcWaterOpts {
   mixT1?: number              // default 0.85
   baseDensity?: number        // default 0.5
   coverKnee?: number          // default 0.35
+  debugStage?: number         // 0 = final render; 1..8 = dump an intermediate stage
 }
 
 const FRAG = /* glsl */`#version 300 es
 precision highp float;
 in vec2 vTextureCoord;
 out vec4 finalColor;
-uniform sampler2D uSdf;
+uniform sampler2D uTexture;   // filter INPUT = the SDF texture (R=sdfN, G=rim); Pixi maps vTextureCoord to it
 uniform float uTexelWorld, uSeed, uOffBase, uOffNoiseAmp, uWarpAmp, uShadowAmp, uFbmB, uPaperC;
+uniform float uInteriorScale;
 uniform vec2 uShadowDir;
 uniform float uBandCount, uEdgeWidth, uBandGain;
 uniform vec3 uKA, uSA, uKB, uSB, uPaperColor;
 uniform float uPlateauLo, uPlateauHi, uMixT0, uMixT1, uBaseDensity, uCoverKnee;
+uniform float uDebugStage;   // 0 = final; 1..8 = dump an intermediate stage
 ${GLSL_SIMPLEX}
 ${GLSL_FBM}
 ${GLSL_DITHER}
@@ -46,29 +50,18 @@ ${GLSL_DITHER}
 // deterministic per-seed phase — inject seed HERE, never into the texture coord.
 float seedPhase(){ return fract(sin(uSeed * 12.9898) * 43758.5453) * 100.0; }
 
-// puddle pseudo-distance: SDF sampled at uv (NOT seed-offset), tiny warp only.
-// \`sdfW\` (silhouette distance, world units, neg inside) is exposed for the warm rim.
-float puddleSdf(vec2 uv, out float inside, out float sdfW){
+// Sample the pre-normalized SDF texture (R = sdfN 0edge->1center, G = rim 0edge->1by10px).
+// A tiny warp per seed makes the field organic. Returns sdfN; exposes rimField + inside.
+float sampleField(vec2 uv, out float inside, out float rimField){
   float sp = seedPhase();
-  // warp amplitude is small in UV space (uWarpAmp ~ 0.03); stays well within [0,1].
   vec2 wuv = uv + uWarpAmp * vec2(fbm(uv*4.0 + sp, 3), fbm(uv*4.0 - sp, 3));
-  float sdfPx = texture(uSdf, clamp(wuv, 0.001, 0.999)).r; // signed pixels, neg inside
-  sdfW = sdfPx * uTexelWorld;                              // -> world units
-  vec2 c = uv - 0.5;
-  float len = max(length(c), 1e-4);                        // guard center singularity
-  vec2 n = c / len;
-  float theta = atan(n.y, n.x);
-  float angNoise = uOffNoiseAmp * snoise(vec2(cos(theta), sin(theta))*2.0 + sp);
-  float shadow = uShadowAmp * dot(n, uShadowDir);          // uShadowDir normalized in JS
-  float offset = uOffBase + angNoise + shadow;
-  float pud = sdfW - offset;                               // negative inside inflated puddle
-  inside = step(pud, 0.0);
-  return pud;
+  vec4 s = texture(uTexture, clamp(wuv, 0.001, 0.999));
+  rimField = s.g;                 // 0 at silhouette edge -> 1 by ~10px inside
+  inside = step(0.004, s.r);      // sdfN > ~1/255 => inside the silhouette
+  return s.r;                     // sdfN (radial 0->1)
 }
 
-float dryingField(vec2 uv, float pud){
-  // normalize puddle sdf to ~[0,1] inside (0 at rim, 1 deep interior)
-  float sdfN = clamp(-pud / max(uOffBase, 1e-3), 0.0, 1.0);
+float dryingField(vec2 uv, float sdfN){
   float fb = uFbmB * fbm(uv*6.0 + uSeed*2.0, 4);      // [-0.5..0.5]-ish
   float paper = uPaperC * fbm(uv*40.0 + uSeed, 3);
   return sdfN + fb + paper;                            // T
@@ -80,19 +73,23 @@ float bandThreshold(int k, int n){
   return pow(f, 1.6);                    // tighter near rim (small T)
 }
 // asymmetric front profile: sharp on the low-T (advancing) side, exp decay into high-T.
+// Band width is measured in RESOLUTION-INDEPENDENT T-space (a fraction of the drying
+// range), NOT render-target pixels — a grad/fwidth normalization sizes bands in bake-target
+// pixels, so the 2x bake + downscale to the cell shrank them below visibility (Fable's
+// multi-resolution caveat). T-space width survives the downscale.
 float bandTerm(float T, float w, int n){
-  // clamped analytic gradient (fwidth of the paper-noise term alone is jagged);
-  // floor keeps thin lines finite, ceil stops paper high-freq blowing width up.
-  float grad = clamp(length(vec2(dFdx(T), dFdy(T))), 2e-3, 1e-1);
+  float wT = 0.008 + 0.02 * w;            // w in [0.4..3] -> narrow T-space width ~0.016..0.068
   float acc = 0.0;
   // fixed 7-iteration loop + mask (non-const \`break\` fails some mobile compilers).
   for(int k=0;k<7;k++){
     float inRange = (k < n) ? 1.0 : 0.0;
     float tau = bandThreshold(k, max(n,1));
-    float d = (T - tau)/(w*grad);         // signed, in line-widths
-    // spike at d=0; quick rise on advancing (d<0) side, long exp decay inward (d>0).
-    float spike = (d < 0.0) ? smoothstep(-1.0,0.0,d) : exp(-d*1.5);
-    acc += spike * inRange;
+    float d = (T - tau)/wT;               // signed, in T-space band-widths
+    // COMPACT asymmetric line: sharp rise below tau, gaussian (short) decay inward.
+    // Compact tails + MAX-combine keep the 5-7 bands DISCRETE — summing long exp
+    // tails smeared adjacent bands into a smooth gradient (no visible rings).
+    float spike = (d < 0.0) ? smoothstep(-1.0, 0.0, d) : exp(-d*d*0.6);
+    acc = max(acc, spike * inRange);      // MAX, not sum: overlapping tails don't accumulate.
   }
   return acc;   // corner at d=0 is the intended sharp pigment front; output is baked (static),
                 // so no temporal Mach-band shimmer.
@@ -111,40 +108,46 @@ float plateau(float d, float lo, float hi){
 }
 
 void main(){
-  float inside, sdfW; float pud = puddleSdf(vTextureCoord, inside, sdfW);
+  // The filter INPUT (uTexture) IS the SDF sprite, so vTextureCoord maps to it directly.
+  vec2 uv = vTextureCoord;
+
+  float inside, rimField; float sdfN = sampleField(uv, inside, rimField);
   if(inside < 0.5){ finalColor = vec4(0.0); return; }
-  float T = dryingField(vTextureCoord, pud);
+  float T = dryingField(uv, sdfN);
   float sp = seedPhase();
 
   // 1) base wash with LOW-FREQ spatial variation, so the plateau does real work
-  float base = uBaseDensity * (0.7 + 0.6 * (fbm(vTextureCoord*3.0 + sp, 3) * 0.5 + 0.5));
+  float base = uBaseDensity * (0.7 + 0.6 * (fbm(uv*3.0 + sp, 3) * 0.5 + 0.5));
   // 2) plateau BEFORE bands (density field only, never T)
-  float dens = plateau(base, uPlateauLo, uPlateauHi);
+  float densP = plateau(base, uPlateauLo, uPlateauHi);
   // 3) + bands (additive in density)
-  dens += bandTerm(T, uEdgeWidth, int(uBandCount)) * uBandGain;
+  float bands = bandTerm(T, uEdgeWidth, int(uBandCount));
+  float dens = densP + bands * uBandGain;
 
-  // weak WARM mask rim: keyed off SILHOUETTE distance sdfW (~0 at edge, <0 inside),
-  // NOT the puddle pud. Lost-and-found dropouts so it isn't a uniform halo.
-  float rimBand = 1.0 - smoothstep(0.0, 3.0, -sdfW);       // ~1 within 3px inside silhouette
-  rimBand *= 0.5 + 0.5 * snoise(vTextureCoord*20.0 + sp);  // dropouts
-  dens += 0.4 * rimBand;                                    // 30-50% of a band's density
+  // weak WARM mask rim: rimField ~0 at the silhouette edge -> 1 by ~10px inside.
+  float rimBand = (1.0 - rimField) * (0.5 + 0.5 * snoise(uv*20.0 + sp));
+  dens += 0.4 * rimBand;
 
-  if(dens < 1e-3){ finalColor = vec4(uPaperColor, 1.0); return; } // K-M is degenerate at 0
-
-  // 4) pigment split by T (early-drying -> A green, late -> B warm) + warm rim enrichment.
-  //    Concentration scales K (absorption) ONLY; coverage is a SEPARATE alpha (no double-count).
-  float m = smoothstep(uMixT0, uMixT1, T);
-  m = clamp(m + rimBand * 0.5, 0.0, 1.0);                   // half interior B-enrichment at rim
+  // 4) pigment split by T + warm rim enrichment. Concentration scales K only.
+  float m = clamp(smoothstep(uMixT0, uMixT1, T) + rimBand * 0.5, 0.0, 1.0);
   vec3 K = mix(uKA, uKB, m) * dens;
   vec3 S = mix(uSA, uSB, m);
   vec3 R = kmReflectance(K, S);
-
-  float cover = clamp(dens / uCoverKnee, 0.0, 1.0);         // opacity, independent of concentration
+  float cover = clamp(dens / uCoverKnee, 0.0, 1.0);
   vec3 col = mix(uPaperColor, R, cover);
+  col += (ditherBlue(gl_FragCoord.xy) - 0.5) / 255.0;       // 5) dither
 
-  // 5) dither before 8-bit
-  col += (ditherBlue(gl_FragCoord.xy) - 0.5) / 255.0;
-  finalColor = vec4(col, 1.0);
+  // Stage dump switch (uDebugStage>0 outputs one intermediate as grayscale/color).
+  int stg = int(uDebugStage + 0.5);
+  if(stg == 1){ finalColor = vec4(vec3(texture(uTexture, uv).r),1.0); return; }     // raw sdfN (should be radial 0..1)
+  if(stg == 2){ finalColor = vec4(vec3(sdfN),1.0); return; }                     // sdfN (radial)
+  if(stg == 3){ finalColor = vec4(vec3(clamp(T,0.0,1.0)),1.0); return; }         // drying field T
+  if(stg == 4){ finalColor = vec4(vec3(clamp(bands,0.0,1.0)),1.0); return; }     // raw bandTerm
+  if(stg == 5){ finalColor = vec4(vec3(clamp(dens,0.0,1.0)),1.0); return; }      // total density
+  if(stg == 6){ finalColor = vec4(vec3(m),1.0); return; }                        // pigment mix m
+  if(stg == 7){ finalColor = vec4(vec3(cover),1.0); return; }                    // coverage alpha
+  if(stg == 8){ finalColor = vec4(R,1.0); return; }                             // K-M reflectance
+  finalColor = vec4(col, 1.0);                                                   // 0 = final
 }`
 
 export class ProceduralWatercolorFilter extends Filter {
@@ -154,6 +157,7 @@ export class ProceduralWatercolorFilter extends Filter {
     const pigB = o.pigB
     const g = new UniformGroup({
       uTexelWorld:  { value: o.sdfTexelWorldSize,                    type: 'f32' },
+      uInteriorScale:{ value: o.interiorScale,                       type: 'f32' },
       uSeed:        { value: o.seed,                                 type: 'f32' },
       uOffBase:     { value: o.offsetBase,                           type: 'f32' },
       uOffNoiseAmp: { value: o.offsetNoiseAmp,                       type: 'f32' },
@@ -178,10 +182,11 @@ export class ProceduralWatercolorFilter extends Filter {
       uMixT1:       { value: o.mixT1       ?? 0.85,                  type: 'f32' },
       uBaseDensity: { value: o.baseDensity ?? 0.5,                   type: 'f32' },
       uCoverKnee:   { value: o.coverKnee   ?? 0.35,                  type: 'f32' },
+      uDebugStage:  { value: o.debugStage  ?? 0,                     type: 'f32' },
     })
     super({
       glProgram: GlProgram.from({ vertex: defaultFilterVert, fragment: FRAG }),
-      resources: { procUniforms: g, uSdf: o.sdf.source },
+      resources: { procUniforms: g },
     })
     this.g = g
   }

@@ -11,7 +11,7 @@
  * variants look like genuinely different hand-painted washes, all real pigment.
  * The silhouette (plant identity) is identical across variants by design.
  */
-import { ref, watch, onMounted, onUnmounted, markRaw } from 'vue'
+import { ref, watch, onMounted, onUnmounted, markRaw, nextTick } from 'vue'
 import { Application, Assets, Container, Graphics, Sprite, TilingSprite, Text, Texture } from 'pixi.js'
 import { fetchPlantSvg, fetchPlantList, type PlantSummary } from '../lib/plantApi'
 import { extractSilhouette, type Vec2 } from '../lib/silhouette'
@@ -88,9 +88,10 @@ const pwCoverKnee     = ref(0.35)   // coverage opacity knee [0.1, 1]
 const pwShadowDX      = ref(0.6)    // shadow direction X (normalized in JS) [-1, 1]
 const pwShadowDY      = ref(-0.4)   // shadow direction Y (normalized in JS) [-1, 1]
 const pwShadowAmp     = ref(0.05)   // shadow amplitude [0, 0.2]
+const pwDebugStage    = ref(0)      // 0 = final; 1..8 = dump a pipeline stage (debug)
 
 // ── SDF cache: keyed by plantId:dilation, rebuilt only on silhouette changes ──
-type SdfEntry = { sdfTex: ReturnType<typeof sdfToTexture>; texelWorld: number }
+type SdfEntry = { sdfTex: ReturnType<typeof sdfToTexture>; texelWorld: number; interiorScale: number }
 let sdfCacheMap = new Map<string, SdfEntry>()
 // Baked RenderTextures from the previous rebuild — freed at the start of the next.
 let bakedTexturesToDestroy: ReturnType<typeof sdfToTexture>[] = []
@@ -298,8 +299,11 @@ function getOrBuildSdf(): SdfEntry {
   if (!entry) {
     const mask = silhouetteMask(silhouettePolys, RASTER, RASTER)
     const sdf = computeMaskSdf(mask, RASTER)
-    const sdfTex = sdfToTexture(sdf, RASTER)
-    entry = { sdfTex, texelWorld: DISPLAY / RASTER }
+    // Deepest interior distance drives the pre-normalized sdfN packed into the texture.
+    let maxDepth = 0
+    for (let i = 0; i < sdf.length; i++) if (-sdf[i] > maxDepth) maxDepth = -sdf[i]
+    const sdfTex = sdfToTexture(sdf, RASTER, maxDepth)
+    entry = { sdfTex, texelWorld: DISPLAY / RASTER, interiorScale: Math.max(maxDepth * (DISPLAY / RASTER), 1e-3) }
     sdfCacheMap.set(key, entry)
   }
   return entry
@@ -337,7 +341,7 @@ function rebuild() {
 
     if (mode.value === 'procedural') {
       // Per-plant SDF: built once per plantId:dilation, reused across all seeds.
-      const { sdfTex, texelWorld } = getOrBuildSdf()
+      const { sdfTex, texelWorld, interiorScale } = getOrBuildSdf()
 
       // One filter per seed (different seed → different drying-field phase).
       // Do NOT destroy the filter after baking — it shares sdfTex.source via
@@ -345,6 +349,7 @@ function rebuild() {
       const filter = new ProceduralWatercolorFilter({
         sdf: sdfTex,
         sdfTexelWorldSize: texelWorld,
+        interiorScale,
         seed,
         offsetBase: pwOffsetBase.value,
         offsetNoiseAmp: pwOffsetBase.value * 0.35,  // 35% of offset base
@@ -364,27 +369,28 @@ function rebuild() {
         mixT1: pwMixT1.value,
         baseDensity: pwBaseDensity.value,
         coverKnee: pwCoverKnee.value,
+        debugStage: pwDebugStage.value,
       })
 
-      // 2× bake: render a DISPLAY*2 white sprite with the filter to a 2× texture,
-      // then wrap in a Sprite scaled to DISPLAY. This gives 4× physical pixels
-      // shown at 1× = a clean 2× supersampled bake.
-      const white = new Sprite(Texture.WHITE)
-      white.anchor.set(0.5)
-      white.width = DISPLAY * 2
-      white.height = DISPLAY * 2
-      white.filters = [filter]
+      // 2× bake: the filter runs on a Sprite OF THE SDF TEXTURE (so the shader reads it
+      // via the auto-provided uTexture input with correct vTextureCoord mapping), sized
+      // DISPLAY*2, baked to a 2× texture then shown at DISPLAY = clean supersampled bake.
+      const src = new Sprite(sdfTex)
+      src.anchor.set(0.5)
+      src.width = DISPLAY * 2
+      src.height = DISPLAY * 2
+      src.filters = [filter]
 
       const bakedTex = app.renderer.generateTexture({
-        target: white,
+        target: src,
         resolution: 2,
         textureSourceOptions: { scaleMode: 'linear' },
       })
       // Track for destruction at the top of the next rebuild.
       bakedTexturesToDestroy.push(bakedTex)
 
-      // white.destroy() with NO options — never {texture:true} (would kill Texture.WHITE).
-      white.destroy()
+      // Destroy the wrapper Sprite only — NOT the shared cached SDF texture.
+      src.destroy({ texture: false })
 
       const bakedSprite = markRaw(new Sprite(bakedTex))
       bakedSprite.anchor.set(0.5)
@@ -474,6 +480,31 @@ onMounted(async () => {
 
   await reloadAll()
   resetView()
+
+  // Dev-only programmatic tuning hook for scripts/watercolor-render.ts — set the
+  // procedural knobs from a JSON object and re-render deterministically (no slider
+  // poking, survives HMR). Resolves once the grid has rebuilt.
+  if (import.meta.env.DEV) {
+    const knobMap: Record<string, { value: number }> = {
+      offsetBase: pwOffsetBase, warpAmp: pwWarpAmp, fbmB: pwFbmB, paperC: pwPaperC,
+      bandCount: pwBandCount, edgeWidth: pwEdgeWidth, bandGain: pwBandGain,
+      plateauLo: pwPlateauLo, plateauHi: pwPlateauHi, mixT0: pwMixT0, mixT1: pwMixT1,
+      baseDensity: pwBaseDensity, coverKnee: pwCoverKnee,
+      shadowDX: pwShadowDX, shadowDY: pwShadowDY, shadowAmp: pwShadowAmp,
+      variants: VARIANT_COUNT, dilation, debugStage: pwDebugStage,
+    }
+    ;(window as unknown as { __procTune?: unknown }).__procTune = async (params: Record<string, number>) => {
+      mode.value = 'procedural'
+      if (typeof params.plantId === 'number') plantId.value = params.plantId
+      for (const [k, v] of Object.entries(params)) {
+        if (k === 'plantId') continue
+        if (knobMap[k]) knobMap[k].value = v
+      }
+      await nextTick()
+      await reloadAll()
+      await nextTick()
+    }
+  }
 })
 
 onUnmounted(() => {

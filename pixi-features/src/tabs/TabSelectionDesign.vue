@@ -68,7 +68,7 @@ const aBreath = ref(1.2), aMon = ref(3.4), aGlow = ref(0)
 const bSpeed  = ref(40),  bDash = ref(6),  bGlow = ref(1.4)
 const cDur    = ref(1.2), cWob  = ref(1.5), cGlow = ref(0.8)
 const dDist   = ref(18),  dStr  = ref(2.4), dSpd  = ref(2.0)
-const eDur    = ref(1.2), eSpd  = ref(30),  eGlow = ref(1.0)
+const eDur    = ref(1.2), eSpd  = ref(1000), eGlow = ref(1.0)
 
 // ---- Pixi objects (markRaw — never proxied) ------------------------------------
 let app          = markRaw({} as Application)
@@ -546,7 +546,7 @@ const currentMode = computed(() => MODES.find(m => m.id === mode.value)!)
         <div class="row"><label>Draw duration</label><span class="val">{{ eDur.toFixed(1) }}s</span></div>
         <input type="range" v-model.number="eDur" min="0.4" max="3.0" step="0.1" />
         <div class="row"><label>Sweep speed</label><span class="val">{{ eSpd }}</span></div>
-        <input type="range" v-model.number="eSpd" min="0" max="120" step="1" />
+        <input type="range" v-model.number="eSpd" min="0" max="1500" step="10" />
         <div class="row"><label>Glow strength</label><span class="val">{{ eGlow.toFixed(1) }}</span></div>
         <input type="range" v-model.number="eGlow" min="0" max="3" step="0.1" />
       </template>

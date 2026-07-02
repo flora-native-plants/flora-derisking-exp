@@ -55,6 +55,15 @@ let clock = 0   // continuous frame clock for perpetual motion (registration bou
 let zoom = 1, panX = 0, panY = 0
 const zoomPct = ref(100)
 
+// NMS: suppress corner/witness marks within this many WORLD units of a stronger one (0 = off)
+const nmsRadius = ref(45)
+const nmsAlongEdge = ref(true)   // measure distance along the perimeter (arc-length) vs straight-line
+
+// bounce (modes A & E): how fast the marks breathe, how far the swing reaches, and its easing curve
+const bounceSpeed = ref(0.09)    // clock multiplier
+const bounceAmount = ref(8)      // amplitude in world units (distance out from resting)
+const bounceEase = ref<'sine'|'linear'|'back'|'bounce'|'elastic'>('sine')
+
 // ---- shapes (muted plan fills that read on paper) --------------------------------
 
 const SHAPES: ShapeDef[] = [
@@ -114,21 +123,60 @@ function arcLen(pts: [number,number][]) {
 function edgeNormal(a: [number,number], b: [number,number]): [number,number] {
   const dx=b[0]-a[0], dy=b[1]-a[1]; const l=Math.hypot(dx,dy)||1; return [dy/l, -dx/l]
 }
-// per-vertex outward unit normals (averaged adjacent edge normals, centroid-tested)
-function vertexNormals(pts: [number,number][]): { x:number; y:number; nx:number; ny:number }[] {
+// per-vertex outward unit normal + turn (sharpness) + convex flag + arc-length
+// position `s` along the perimeter; `perim` is the full perimeter (for wrap).
+interface VMark { x:number; y:number; nx:number; ny:number; turn:number; convex:boolean; s:number; perim:number }
+function vertexNormals(pts: [number,number][]): VMark[] {
   let v = pts.slice()
   if (v.length>1 && v[0][0]===v[v.length-1][0] && v[0][1]===v[v.length-1][1]) v = v.slice(0,-1)
   const n = v.length
-  let cx=0, cy=0; for (const p of v){ cx+=p[0]; cy+=p[1] } cx/=n; cy/=n
-  const res: { x:number; y:number; nx:number; ny:number }[] = []
+  let cx=0, cy=0, area2=0
+  const cum: number[] = []; let acc = 0
+  for (let i=0;i<n;i++){
+    cx+=v[i][0]; cy+=v[i][1]; const j=(i+1)%n
+    area2 += v[i][0]*v[j][1] - v[j][0]*v[i][1]
+    cum[i] = acc; acc += Math.hypot(v[j][0]-v[i][0], v[j][1]-v[i][1])
+  }
+  cx/=n; cy/=n; const perim = acc
+  const res: VMark[] = []
   for (let i=0;i<n;i++){
     const prev=v[(i-1+n)%n], cur=v[i], next=v[(i+1)%n]
+    const i1x=cur[0]-prev[0], i1y=cur[1]-prev[1]; const l1=Math.hypot(i1x,i1y)||1
+    const i2x=next[0]-cur[0], i2y=next[1]-cur[1]; const l2=Math.hypot(i2x,i2y)||1
+    const ix=i1x/l1, iy=i1y/l1, ox=i2x/l2, oy=i2y/l2
+    const turn = Math.acos(Math.max(-1, Math.min(1, ix*ox + iy*oy)))   // 0 = straight, π = spike
+    const convex = Math.sign(ix*oy - iy*ox) === Math.sign(area2)
     const n1=edgeNormal(prev,cur), n2=edgeNormal(cur,next)
     let nx=n1[0]+n2[0], ny=n1[1]+n2[1]; const l=Math.hypot(nx,ny)||1; nx/=l; ny/=l
     if ((cur[0]-cx)*nx + (cur[1]-cy)*ny < 0){ nx=-nx; ny=-ny }
-    res.push({ x: cur[0], y: cur[1], nx, ny })
+    res.push({ x: cur[0], y: cur[1], nx, ny, turn, convex, s: cum[i], perim })
   }
   return res
+}
+
+// Non-maximum suppression over corner marks: sort by score (sharper, convex
+// preferred), greedily keep, suppress any remaining mark within minDist.
+// alongEdge=true measures distance ALONG the perimeter (arc-length) instead of
+// straight-line — this is what lets one radius keep a wide-edged hexagon's
+// corners while still collapsing a footprint's short-edged steps.
+function suppressClose<T extends { x:number; y:number; turn:number; convex?:boolean; s?:number; perim?:number }>(
+  marks: T[], minDist: number, alongEdge: boolean): T[] {
+  if (minDist <= 0 || marks.length < 2) return marks
+  const score = (m: T) => m.turn + (m.convex === false ? 0 : 0.4)
+  const order = marks.map((_, i) => i).sort((a, b) => score(marks[b]) - score(marks[a]))
+  const kept: T[] = []
+  const tooClose = (a: T, b: T) => {
+    if (alongEdge && a.s !== undefined && b.s !== undefined && a.perim) {
+      let d = Math.abs(a.s - b.s); d = Math.min(d, a.perim - d)   // circular arc distance
+      return d < minDist
+    }
+    return (a.x-b.x)**2 + (a.y-b.y)**2 < minDist*minDist           // straight-line distance
+  }
+  for (const i of order) {
+    const m = marks[i]
+    if (kept.every(k => !tooClose(k, m))) kept.push(m)
+  }
+  return kept
 }
 // constant outward offset polygon (reuses the vertex normals)
 function offsetPoly(pts: [number,number][], d: number): [number,number][] {
@@ -139,14 +187,19 @@ function offsetPoly(pts: [number,number][], d: number): [number,number][] {
 // Corners with a meaningful turn, filtered by kind. 'convex' = outward-pointing,
 // 'concave' = inward-pointing (reflex). Shallow vertices that merely sample a
 // curve are skipped, so a circle yields none of either kind.
-interface Corner { x:number; y:number; ix:number; iy:number; ox:number; oy:number; nx:number; ny:number }
+interface Corner { x:number; y:number; ix:number; iy:number; ox:number; oy:number; nx:number; ny:number; turn:number; convex:boolean; s:number; perim:number }
 function findCorners(pts: [number,number][], kind: 'convex'|'concave', minTurnDeg = 28): Corner[] {
   let v = pts.slice()
   if (v.length>1 && v[0][0]===v[v.length-1][0] && v[0][1]===v[v.length-1][1]) v = v.slice(0,-1)
   const n = v.length
   let cx=0, cy=0, area2=0
-  for (let i=0;i<n;i++){ cx+=v[i][0]; cy+=v[i][1]; const j=(i+1)%n; area2 += v[i][0]*v[j][1] - v[j][0]*v[i][1] }
-  cx/=n; cy/=n
+  const cum: number[] = []; let acc = 0
+  for (let i=0;i<n;i++){
+    cx+=v[i][0]; cy+=v[i][1]; const j=(i+1)%n
+    area2 += v[i][0]*v[j][1] - v[j][0]*v[i][1]
+    cum[i] = acc; acc += Math.hypot(v[j][0]-v[i][0], v[j][1]-v[i][1])
+  }
+  cx/=n; cy/=n; const perim = acc
   const cosMax = Math.cos(minTurnDeg * Math.PI/180)
   const res: Corner[] = []
   for (let i=0;i<n;i++){
@@ -154,7 +207,8 @@ function findCorners(pts: [number,number][], kind: 'convex'|'concave', minTurnDe
     const i1x=cur[0]-prev[0], i1y=cur[1]-prev[1]; const l1=Math.hypot(i1x,i1y)||1
     const i2x=next[0]-cur[0], i2y=next[1]-cur[1]; const l2=Math.hypot(i2x,i2y)||1
     const ix=i1x/l1, iy=i1y/l1, ox=i2x/l2, oy=i2y/l2
-    if (ix*ox + iy*oy > cosMax) continue                 // too straight → not a real corner
+    const dot = ix*ox + iy*oy
+    if (dot > cosMax) continue                           // too straight → not a real corner
     const cross = ix*oy - iy*ox
     const isConvex = Math.sign(cross) === Math.sign(area2)
     if (kind === 'convex' ? !isConvex : isConvex) continue
@@ -162,7 +216,7 @@ function findCorners(pts: [number,number][], kind: 'convex'|'concave', minTurnDe
     const n1=edgeNormal(prev,cur), n2=edgeNormal(cur,next)
     let nx=n1[0]+n2[0], ny=n1[1]+n2[1]; const l=Math.hypot(nx,ny)||1; nx/=l; ny/=l
     if ((cur[0]-cx)*nx + (cur[1]-cy)*ny < 0){ nx=-nx; ny=-ny }
-    res.push({ x:cur[0], y:cur[1], ix, iy, ox, oy, nx, ny })
+    res.push({ x:cur[0], y:cur[1], ix, iy, ox, oy, nx, ny, turn: Math.acos(Math.max(-1,Math.min(1,dot))), convex: isConvex, s: cum[i], perim })
   }
   return res
 }
@@ -179,8 +233,8 @@ function centroidRadius(pts: [number,number][]) {
 
 function drawRegistration(s: Shape) {
   const wo = worldOutline(s); const t = ease(s.t)
-  // continuous bounce: the marks breathe in/out perpetually while selected
-  const out = 10 + 5 * Math.sin(clock * 0.09)
+  // continuous bounce: marks swing out from a resting gap by the eased oscillation
+  const out = 6 + bounceAmount.value * bounceOsc()
   const arm = 14
   const g = overlay
   g.setStrokeStyle({ width: 1, color: DRAFT, alpha: t })
@@ -204,9 +258,9 @@ function drawRegistration(s: Shape) {
   }
 
   // an edge-aligned L-bracket just outside every CONVEX corner (concave notches
-  // are left bare — convex-only reads cleaner on real footprints)
+  // are left bare), with NMS to thin clusters of close corners
   void concave
-  for (const c of convex) {
+  for (const c of suppressClose(convex, nmsRadius.value, nmsAlongEdge.value)) {
     const qx = c.x + c.nx*out, qy = c.y + c.ny*out         // corner offset along its outward bisector (bounces)
     g.moveTo(qx + c.ox*arm, qy + c.oy*arm)                 // arm along the outgoing edge
      .lineTo(qx, qy)
@@ -268,7 +322,7 @@ function witnessTick(g: Graphics, bx: number, by: number, nx: number, ny: number
 function drawWitness(s: Shape) {
   const wo = worldOutline(s); const t = ease(s.t)
   const gap = 5
-  const ext = (13 + 7 * Math.sin(clock * 0.09)) * t   // extension bounces in/out while selected
+  const ext = (6 + bounceAmount.value * bounceOsc()) * t   // extension swings out by the eased oscillation
   const g = overlay
   // faint key-line on the actual contour
   g.setStrokeStyle({ width: 0.6, color: DRAFT, alpha: t * 0.5 })
@@ -284,7 +338,8 @@ function drawWitness(s: Shape) {
       witnessTick(g, cx + nx*r, cy + ny*r, nx, ny, gap, ext)
     }
   } else {
-    for (const { x, y, nx, ny } of vertexNormals(wo)) witnessTick(g, x, y, nx, ny, gap, ext)
+    for (const { x, y, nx, ny } of suppressClose(vertexNormals(wo), nmsRadius.value, nmsAlongEdge.value))
+      witnessTick(g, x, y, nx, ny, gap, ext)
   }
   g.stroke()
 }
@@ -315,7 +370,42 @@ function drawDashedClosed(pts: [number,number][], offset: number, dash: number, 
   g.stroke()
 }
 
-function ease(t: number) { return t<0?0:t>1?1:t*t*(3-2*t) }   // smoothstep
+function ease(t: number) { return t<0?0:t>1?1:t*t*(3-2*t) }   // smoothstep (entrance fade)
+
+// ---- bounce easing ---------------------------------------------------------------
+// Each entry maps cycle phase p∈[0,1) → "how far out" ∈ ~[0,1] (0 at the ends).
+// Triangle-based ones ease a 0→1→0 ramp; sine is the smooth symmetric default.
+const TAU = Math.PI * 2
+const tri = (p: number) => 1 - Math.abs(2*p - 1)
+const smooth = (t: number) => t*t*(3 - 2*t)
+const outBack = (t: number) => { const c1=1.70158, c3=c1+1; return 1 + c3*(t-1)**3 + c1*(t-1)**2 }
+const outBounce = (t: number) => {
+  const n1=7.5625, d1=2.75
+  if (t < 1/d1) return n1*t*t
+  if (t < 2/d1) { t-=1.5/d1; return n1*t*t + 0.75 }
+  if (t < 2.5/d1) { t-=2.25/d1; return n1*t*t + 0.9375 }
+  t-=2.625/d1; return n1*t*t + 0.984375
+}
+const outElastic = (t: number) => t===0?0 : t===1?1 : Math.pow(2,-10*t)*Math.sin((t*10-0.75)*(TAU/3)) + 1
+// Energetic easings only show their character on a full 0→1 sweep, so run them as
+// an asymmetric PULSE: pop out (with character) → ease back → rest. That keeps the
+// overshoot/bounce/spring at full amplitude instead of cancelling on a symmetric ramp.
+function pulse(p: number, easeOut: (t: number) => number): number {
+  if (p < 0.45) return easeOut(p / 0.45)          // pop out — easing personality lives here
+  if (p < 0.80) return 1 - smooth((p - 0.45) / 0.35)  // ease back in
+  return 0                                         // rest (held in) until the next pulse
+}
+const OSC: Record<string, (p: number) => number> = {
+  sine:    p => 0.5 - 0.5*Math.cos(TAU*p),   // calm continuous breathe (slow at ends)
+  linear:  p => tri(p),                       // mechanical breathe (constant speed, sharp reversal)
+  back:    p => pulse(p, outBack),            // pop + overshoot, then rest
+  bounce:  p => pulse(p, outBounce),          // pop + ball-bounce, then rest
+  elastic: p => pulse(p, outElastic),         // pop + spring wobble, then rest
+}
+function bounceOsc(): number {
+  const p = (((clock * bounceSpeed.value) % TAU) + TAU) % TAU / TAU
+  return (OSC[bounceEase.value] ?? OSC.sine)(p)
+}
 
 // ---- interaction + ticker --------------------------------------------------------
 
@@ -433,6 +523,33 @@ const DESC: Record<Mode,string> = {
     <div class="mode-strip">
       <button v-for="m in MODES" :key="m.id" :class="['mode-btn',{active: mode===m.id}]" @click="selectMode(m.id)">{{ m.label }}</button>
     </div>
+    <div v-if="mode === 'registration' || mode === 'witness'" class="controls">
+      <div class="ctrl-title">Bounce</div>
+      <label>Speed
+        <input type="range" v-model.number="bounceSpeed" min="0" max="0.3" step="0.01" />
+        {{ bounceSpeed === 0 ? 'still' : bounceSpeed.toFixed(2) }}
+      </label>
+      <label>Distance
+        <input type="range" v-model.number="bounceAmount" min="0" max="24" step="1" />
+        {{ bounceAmount }}u
+      </label>
+      <label>Easing
+        <select v-model="bounceEase">
+          <option value="sine">Sine — calm breathe</option>
+          <option value="linear">Linear — mechanical</option>
+          <option value="back">Back — pop + overshoot</option>
+          <option value="bounce">Bounce — pop + bounce</option>
+          <option value="elastic">Elastic — pop + spring</option>
+        </select>
+      </label>
+      <div class="ctrl-title" style="margin-top:4px">Corner NMS</div>
+      <label>Radius
+        <input type="range" v-model.number="nmsRadius" min="0" max="120" step="5" />
+        {{ nmsRadius === 0 ? 'off' : nmsRadius + 'u' }}
+      </label>
+      <label class="check"><input type="checkbox" v-model="nmsAlongEdge" /> along edge (arc-length)</label>
+      <div class="hint-small">suppress marks within N units of a sharper one — measured {{ nmsAlongEdge ? 'along the border' : 'straight-line' }}</div>
+    </div>
     <div class="desc">{{ DESC[mode] }} <span class="hint">· click shapes to select · scroll to zoom · drag paper to pan</span></div>
   </div>
 </template>
@@ -444,6 +561,18 @@ canvas { display: block; width: 100%; height: 100%; }
 .fps { font-size: 18px; font-weight: bold; color: #3a7; }
 .fps span { font-size: 12px; color: #6b8; }
 .zoom { color: #7a7466; }
+.controls {
+  position: absolute; top: 96px; right: 14px;
+  display: flex; flex-direction: column; gap: 7px;
+  font-family: monospace; font-size: 12px; color: #5a5446;
+  background: rgba(255,255,255,0.85); padding: 10px 14px; border-radius: 6px;
+  border: 1px solid #d8d2c4; min-width: 180px;
+}
+.ctrl-title { font-size: 11px; color: #8a8474; }
+.controls label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.controls input[type=range] { width: 90px; }
+.controls select { font-family: monospace; font-size: 11px; background: #faf8f2; color: #2a2723; border: 1px solid #d0c9ba; border-radius: 3px; padding: 1px 3px; }
+.hint-small { font-size: 9px; color: #a09a8a; }
 .mode-strip {
   position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
   display: flex; gap: 4px; background: rgba(255,255,255,0.8); padding: 6px 10px;
