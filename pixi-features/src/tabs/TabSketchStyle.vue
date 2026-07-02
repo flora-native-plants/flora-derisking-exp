@@ -89,6 +89,10 @@ function crispPath(g: Graphics, d: string): void {
   g.stroke({ color: 0x000000, width: 1 / zoom, alpha: 0.18 })
 }
 
+// Phase A layered-graphite build-up: N low-alpha passes, each a differently-seeded searching line.
+const PASS_ALPHA = 0.55
+const PASS_SEEDS = [0, 7]
+
 function redraw(): void {
   world.removeChildren().forEach((c) => c.destroy())
   const ro: RoughStrokeOptions = {
@@ -103,20 +107,28 @@ function redraw(): void {
       crispPath(ref, s.d)
       world.addChild(ref)
     }
-    const g = markRaw(new Graphics())
-    if (opts.generator === 'kinematic') {
-      const ko: KinematicStrokeOptions = {
-        squiggle: opts.squiggle,
-        cpSpacing: opts.cpSpacing,
-        seed: opts.seed,
-        overshoot: opts.overshoot,
-        cornerAngle: opts.cornerAngle,
+    // Phase A "layered graphite": draw each stroke as 2 low-alpha passes with different seeds,
+    // multiply-blended, so the offset passes + crossings DARKEN like layered pencil (instead of
+    // flat occlusion). The broken full-screen grain filter over `world` is gone (see applyGrain).
+    // Bonus: multiply composites strokes against the paper sprite behind → they pick up its tooth.
+    for (const seedOffset of PASS_SEEDS) {
+      const g = markRaw(new Graphics())
+      g.blendMode = 'multiply'
+      const style = { color: s.color, width: opts.strokeWidth / zoom, alpha: PASS_ALPHA }
+      if (opts.generator === 'kinematic') {
+        const ko: KinematicStrokeOptions = {
+          squiggle: opts.squiggle,
+          cpSpacing: opts.cpSpacing,
+          seed: opts.seed + seedOffset,
+          overshoot: opts.overshoot,
+          cornerAngle: opts.cornerAngle,
+        }
+        drawKinematicStroke(g, s.d, ko, style)
+      } else {
+        drawRoughStroke(g, s.d, { ...ro, seed: opts.seed + seedOffset }, style)
       }
-      drawKinematicStroke(g, s.d, ko, { color: s.color, width: opts.strokeWidth / zoom })
-    } else {
-      drawRoughStroke(g, s.d, ro, { color: s.color, width: opts.strokeWidth / zoom })
+      world.addChild(g)
     }
-    world.addChild(g)
   }
 }
 
@@ -216,7 +228,11 @@ function applyGrain(): void {
   inkFilter.setParams({ ...shared, inkGrain: grain.inkGrainAmt })
   paperSprite.filters = grain.enabled ? [paperFilter] : []
   paperSprite.visible = grain.enabled
-  world.filters = grain.enabled && grain.inkGrain ? [inkFilter] : []
+  // Phase A: the graphite-in-stroke filter over the scaled `world` container is the cause of the
+  // stairstepping (below-screen-res RenderTexture) + the 4fps cliff (bounds grow with zoom). Killed.
+  // Graphite tooth now comes from multiply-blending the strokes against the paper sprite; a proper
+  // stroke-space shader (Phase B ribbon mesh) replaces it. inkFilter left instantiated but unused.
+  world.filters = []
   syncCamera()
 }
 watch(grain, () => applyGrain())

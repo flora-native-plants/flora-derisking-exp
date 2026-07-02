@@ -74,19 +74,22 @@ void main() {
 
   float g = grainField(guv);   // ~0..1, luminance as height: 1 = peak, 0 = tooth valley
 
-  // Derive a surface normal from the height field. A WIDE, symmetric difference smooths the
-  // gradient — a 1-texel diff over a noisy photo gives salt-and-pepper relief. This gives broad
-  // paper undulation instead.
-  float e  = 0.02;
-  float hxp = grainField(guv + vec2(e, 0.0));
-  float hxn = grainField(guv - vec2(e, 0.0));
-  float hyp = grainField(guv + vec2(0.0, e));
-  float hyn = grainField(guv - vec2(0.0, e));
-  vec3 N   = normalize(vec3(-(hxp - hxn) * uBumpStrength, -(hyp - hyn) * uBumpStrength, 1.0));
-
-  // Raking light for relief; small ambient so valleys aren't pure black.
-  vec3 L    = normalize(vec3(uLightDir, 0.55));
-  float lit = clamp(dot(N, L) + 0.15, 0.0, 1.0);
+  // Derive a surface normal from the height field ONLY when something needs it (surface lighting,
+  // the normal-map viz, or graphite-in-stroke). The flat paper background — the default — skips
+  // these 4 extra grainField() evals (8 texture taps/pixel), which was the full-screen paper
+  // pass's dominant cost for something that isn't even used. Uniform branch = coherent, cheap.
+  vec3 N = vec3(0.0, 0.0, 1.0);
+  float lit = 1.0;
+  if (uSurface > 0.5 || uShowGrain > 0.5 || uMode > 0.5) {
+    float e  = 0.02;
+    float hxp = grainField(guv + vec2(e, 0.0));
+    float hxn = grainField(guv - vec2(e, 0.0));
+    float hyp = grainField(guv + vec2(0.0, e));
+    float hyn = grainField(guv - vec2(0.0, e));
+    N   = normalize(vec3(-(hxp - hxn) * uBumpStrength, -(hyp - hyn) * uBumpStrength, 1.0));
+    vec3 L = normalize(vec3(uLightDir, 0.55));
+    lit = clamp(dot(N, L) + 0.15, 0.0, 1.0);
+  }
 
   if (uShowGrain > 0.5 && uMode < 0.5) {
     vec3 vis = uSurface > 0.5 ? (N * 0.5 + 0.5) : vec3(g); // normal map vs raw height
