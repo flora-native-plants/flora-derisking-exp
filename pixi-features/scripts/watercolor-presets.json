@@ -2,10 +2,10 @@
   "plantId": 2,
   "variants": 1,
   "presets": [
-    { "name": "grid9",       "plantId": 2,   "variants": 9, "warpAmp": 0.20, "fbmB": 0.30, "paperC": 0.03, "bandCount": 3, "edgeWidth": 1.2, "bandGain": 0.7, "baseDensity": 0.58, "coverKnee": 0.85, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 },
-    { "name": "flat-loose",  "plantId": 2,   "variants": 1, "warpAmp": 0.20, "fbmB": 0.30, "paperC": 0.03, "bandCount": 3, "edgeWidth": 1.2, "bandGain": 0.7, "baseDensity": 0.58, "coverKnee": 0.85, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 },
-    { "name": "plant-8",     "plantId": 8,   "variants": 4, "warpAmp": 0.20, "fbmB": 0.30, "paperC": 0.03, "bandCount": 3, "edgeWidth": 1.2, "bandGain": 0.7, "baseDensity": 0.58, "coverKnee": 0.85, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 },
-    { "name": "plant-40",    "plantId": 40,  "variants": 4, "warpAmp": 0.20, "fbmB": 0.30, "paperC": 0.03, "bandCount": 3, "edgeWidth": 1.2, "bandGain": 0.7, "baseDensity": 0.58, "coverKnee": 0.85, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 },
-    { "name": "plant-120",   "plantId": 120, "variants": 4, "warpAmp": 0.20, "fbmB": 0.30, "paperC": 0.03, "bandCount": 3, "edgeWidth": 1.2, "bandGain": 0.7, "baseDensity": 0.58, "coverKnee": 0.85, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 }
+    { "name": "grid9",       "plantId": 2,   "variants": 9, "warpAmp": 0.20, "fbmB": 0.30, "paperC": 0.03, "bandCount": 3, "edgeWidth": 1.2, "bandGain": 0.4, "baseDensity": 0.58, "coverKnee": 0.55, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 },
+    { "name": "flat-loose",  "plantId": 2,   "variants": 1, "warpAmp": 0.20, "fbmB": 0.30, "paperC": 0.03, "bandCount": 3, "edgeWidth": 1.2, "bandGain": 0.4, "baseDensity": 0.58, "coverKnee": 0.55, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 },
+    { "name": "plant-8",     "plantId": 8,   "variants": 4, "warpAmp": 0.20, "fbmB": 0.30, "paperC": 0.03, "bandCount": 3, "edgeWidth": 1.2, "bandGain": 0.4, "baseDensity": 0.58, "coverKnee": 0.55, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 },
+    { "name": "plant-40",    "plantId": 40,  "variants": 4, "warpAmp": 0.20, "fbmB": 0.30, "paperC": 0.03, "bandCount": 3, "edgeWidth": 1.2, "bandGain": 0.4, "baseDensity": 0.58, "coverKnee": 0.55, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 },
+    { "name": "plant-120",   "plantId": 120, "variants": 4, "warpAmp": 0.20, "fbmB": 0.30, "paperC": 0.03, "bandCount": 3, "edgeWidth": 1.2, "bandGain": 0.4, "baseDensity": 0.58, "coverKnee": 0.55, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 }
   ]
 }

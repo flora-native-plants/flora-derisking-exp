@@ -65,8 +65,12 @@ float dryingField(vec2 uv, float sdfN){
   return sdfN + uFbmB*fbm(uv*6.0 + uSeed*2.0, 4) + uPaperC*fbm(uv*40.0 + uSeed, 3);   // T
 }
 
-float bandThreshold(int k, int n){ return pow(float(k+1)/float(n+1), 1.6); }   // ~[0.05..0.79]
+// Fill-step / band thresholds — SHARED so the bands land exactly on the tonal-step edges
+// (a dark mark that bounds a filled tone reads as painted; a free-floating one reads as a crack).
+float bandThreshold(int k, int n){ return 0.22 + 0.16 * float(k); }   // 0.22,0.38,0.54,0.70
 float hash1(float x){ return fract(sin(x*12.9898) * 43758.5453); }
+// broad soft wash (a tonal MASS, not fbm texture)
+float washBlob(vec2 uv, vec2 c, float r){ return 1.0 - smoothstep(0.0, r, length(uv - c)); }
 
 // Tide-lines, NOT contour lines: (a) each band independently warped so they aren't parallel
 // level-sets, (b) low-freq OCCUPANCY mask so a band exists for an arc then fades/reappears,
@@ -74,18 +78,17 @@ float hash1(float x){ return fract(sin(x*12.9898) * 43758.5453); }
 float bandTerm(vec2 uv, float T, float w, int n, float sp){
   float acc = 0.0;
   float soft = fbm(uv*2.0 + sp + 31.0, 3) * 0.5 + 0.5;   // 0..1: high = feathered, low = crisp
-  float ang = atan(uv.y - 0.5, uv.x - 0.5);              // cheap along-contour parameter
   for(int k=0;k<7;k++){
     float inRange = (k < n) ? 1.0 : 0.0;
     float fk = float(k);
-    float Tk = T + 0.04 * fbm(uv*7.0 + fk*17.3 + sp, 3);                          // (a)
+    float Tk = T + 0.035 * fbm(uv*3.0 + fk*17.3 + sp, 2);                         // (a) low-curvature front
     float wTk = mix(0.009, 0.045, soft) * w * (0.7 + 0.6*hash1(fk*3.1 + sp));     // (c)+(d)
     float gainK = mix(1.0, 0.4, soft) * (0.55 + 0.9*hash1(fk*7.7 + sp));          // (c)+(d)
     float d = (Tk - bandThreshold(k, max(n,1)))/wTk;
     float spike = (d < 0.0) ? smoothstep(-1.0, 0.0, d) : exp(-d*d*0.6);           // asym line
-    // (b) ANISOTROPIC occupancy in the band's own frame: low-freq along the contour (ang),
-    // tight across it (Tk) -> masked-in regions are elongated arcs that taper, not round blobs.
-    float occ = smoothstep(0.30, 0.60, fbm(vec2(ang*1.6 + fk*9.1, Tk*9.0) + sp, 3) * 0.5 + 0.5);
+    // (b) low-freq occupancy so a band exists for an arc then fades (bands follow the mass
+    // contours, which are already arc-like -> no need for the atan frame, which starbursts at centre).
+    float occ = smoothstep(0.48, 0.72, fbm(uv*2.5 + fk*9.1 + sp, 2) * 0.5 + 0.5); // RARE: sharp fronts only occasional
     acc = max(acc, spike * occ * gainK * inRange);
   }
   return acc;
@@ -132,19 +135,28 @@ void main(){
   vec2 uv = vTextureCoord;
   float inside, rimField; float sdfN = sampleField(uv, inside, rimField);
   if(inside < 0.5){ finalColor = vec4(0.0); return; }
-  float T = dryingField(uv, sdfN);
   float sp = seedPhase();
 
-  // 1) flat-ish base wash so most of the leaf is a calm plateau
-  float base = uBaseDensity * (0.92 + 0.16 * (fbm(uv*2.2 + sp, 3) * 0.5 + 0.5));
-  // 2) plateau BEFORE bands (density field only, never T)
-  float densP = plateau(base, uPlateauLo, uPlateauHi);
-  // 3) + primary tide-lines, gated by a per-instance QUIET mask (~1 cycle/crown) so ~40-50%
-  // of each leaf is nearly band-free and the dark accents CLUSTER in a zone (realtex is silent
-  // over whole quadrants). Where that zone sits is also the biggest per-seed variety lever.
-  float activity = smoothstep(0.35, 0.75, fbm(uv*1.2 + sp + 71.0, 2) * 0.5 + 0.5);
-  float bands = min(bandTerm(uv, T, uEdgeWidth, int(uBandCount), sp), 0.85);  // cap near-black
-  float dens = densP + bands * uBandGain * activity;
+  // 1) TONAL MASS field: 2-3 broad overlapping soft washes (NOT fbm texture) + a gentle low-freq
+  // break-up. This is realtex's missing mid-frequency value structure — big soft masses, not a flat disc.
+  vec2 mA = vec2(0.42, 0.40) + 0.22 * vec2(snoise(vec2(sp, 10.0)), snoise(vec2(sp, 11.0)));
+  vec2 mB = vec2(0.60, 0.52) + 0.22 * vec2(snoise(vec2(sp, 12.0)), snoise(vec2(sp, 13.0)));
+  vec2 mC = vec2(0.48, 0.64) + 0.22 * vec2(snoise(vec2(sp, 14.0)), snoise(vec2(sp, 15.0)));
+  float mass = 0.55*washBlob(uv, mA, 0.46) + 0.45*washBlob(uv, mB, 0.42) + 0.35*washBlob(uv, mC, 0.38);
+  mass = clamp(mass * 0.7 + 0.12 * fbm(uv*3.0 + sp + 5.0, 2), 0.0, 1.0);
+
+  // 2) SOFT fill-steps: cumulative broad tonal masses with wide soft shoulders. densP (a thin flat
+  // base = the lowest step) + fill gives the tonal FORM and a real density RANGE (-> luminosity, since
+  // thin regions let K-M reflectance rise toward paper).
+  float densP = plateau(uBaseDensity * 0.55, uPlateauLo, uPlateauHi);
+  float fill = 0.0;
+  for(int k=0;k<4;k++){ float tk = bandThreshold(k, 4); fill += 0.075 * smoothstep(tk-0.15, tk+0.15, mass); } // wide soft shoulders
+  float dens = densP + fill;
+
+  // 3) BANDS = rim spikes ONLY at the fill-step transitions (bandTerm driven by `mass`, thresholds
+  // aligned) -> every dark mark BOUNDS a tone (painted), not a free-floating line (crack).
+  float bands = min(bandTerm(uv, mass, uEdgeWidth, 4, sp), 0.85);
+  dens += bands * uBandGain;
 
   // weak WARM tidied mask rim (halved + occupancy dropouts -> not a triple outline)
   float rimBand = (1.0 - rimField) * smoothstep(0.35, 0.7, snoise(uv*14.0 + sp) * 0.5 + 0.5);
@@ -160,15 +172,16 @@ void main(){
   vec2 c2 = vec2(0.45, 0.58) + 0.34 * vec2(snoise(vec2(sp, 3.0)), snoise(vec2(sp, 4.0)));
   vec2 g1 = haveG1 * secondaryGlaze(uv, c1, r1, sp + 11.0);
   vec2 g2 = haveG2 * secondaryGlaze(uv, c2, r2, sp + 23.0);
-  dens = max(dens + g1.x + g2.x, densP * 0.55);   // scoop lightens within the wash (no bare paper)
+  // scoop floor raised (0.55 -> 0.7): bloom cores stay clearly mid-light warm paint, not near-cream "bald" patches
+  dens = max(dens + g1.x + g2.x, densP * 0.7);
 
   // granulation: value tooth (gated by dens) + high-freq subtractive on COVERAGE (paper through)
   float grain = fbm(uv*62.0 + sp, 2) * fbm(uv*23.0 - sp, 2);
   dens *= 1.0 + 0.15 * grain * smoothstep(0.06, 0.45, dens);
   float grainHi = fbm(uv*110.0 + sp, 2) * 0.5 + 0.5;
 
-  // 4) pigment split: warm follows the late-drying glaze pools (moves per seed), capped at 0.75
-  float warmField = clamp(0.4 * smoothstep(uMixT0, uMixT1, sdfN) + 0.85 * (g1.y + g2.y), 0.0, 1.0);
+  // 4) pigment split: hue follows the tonal MASS (thicker deposits lean warmer) + the bloom pools
+  float warmField = clamp(0.5 * smoothstep(uMixT0, uMixT1, mass) + 0.85 * (g1.y + g2.y), 0.0, 1.0);
   // whisper of low-freq green-temperature drift (bluer<->yellower green), so the field isn't one flat green
   float tempWobble = 0.06 * fbm(uv*1.5 + sp + 91.0, 1);
   float m = clamp(warmField + rimBand * 0.4 + tempWobble, 0.0, 0.75);
@@ -184,7 +197,7 @@ void main(){
   int stg = int(uDebugStage + 0.5);
   if(stg == 1){ finalColor = vec4(vec3(texture(uTexture, uv).r),1.0); return; } // raw sdfN
   if(stg == 2){ finalColor = vec4(vec3(sdfN),1.0); return; }                    // sdfN
-  if(stg == 3){ finalColor = vec4(vec3(clamp(T,0.0,1.0)),1.0); return; }        // drying field T
+  if(stg == 3){ finalColor = vec4(vec3(clamp(mass,0.0,1.0)),1.0); return; }     // tonal mass field
   if(stg == 4){ finalColor = vec4(vec3(clamp(bands,0.0,1.0)),1.0); return; }    // raw bandTerm
   if(stg == 5){ finalColor = vec4(vec3(clamp(dens,0.0,1.0)),1.0); return; }     // total density
   if(stg == 6){ finalColor = vec4(vec3(m),1.0); return; }                       // pigment mix m

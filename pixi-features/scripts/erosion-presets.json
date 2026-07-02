@@ -1,0 +1,8 @@
+{
+  "plantId": 2,
+  "variants": 9,
+  "presets": [
+    { "name": "sim-erosion-debug", "simMode": "erosion", "debug": 1, "variants": 4 },
+    { "name": "sim-erosion", "simMode": "erosion", "debug": 0, "variants": 9 }
+  ]
+}

@@ -14,6 +14,7 @@ import { computeMaskSdf } from '../lib/watercolor/maskSdf'
 import { sdfToTexture } from '../lib/watercolor/sdfTexture'
 import { pigmentKS } from '../lib/watercolor/pigmentKS'
 import { WatercolorSim, type SimParams } from '../lib/watersim/WatercolorSim'
+import { ErosionSim, type ErosionParams } from '../lib/watersim/ErosionSim'
 import { useFps } from '../shared/useFps'
 
 const { fps, frameMs } = useFps()
@@ -24,6 +25,7 @@ const plants = ref<PlantSummary[]>([])
 const DEFAULT_PLANT_ID = 2
 const RASTER = 512
 const SIM_SIZE = 256
+const ERO_SIZE = 160
 const DISPLAY = 300
 const GRID_COLS = 3
 const CONTOUR_COLOR = 0x4a3b2a
@@ -32,6 +34,24 @@ const plantId = ref(DEFAULT_PLANT_ID)
 const dilation = ref(4)
 const variants = ref(9)
 const contourOn = ref(true)
+
+// which engine: 'shallow' = Curtis shallow-water; 'erosion' = receding wet-mask erosion.
+const simMode = ref<'shallow' | 'erosion'>('shallow')
+const debugRaw = ref(false)   // erosion only: show the raw deposited tide-line buffer
+
+// erosion-variant knobs (defaults tuned for a handful of nested, low-curvature tide-lines)
+const eroErode       = ref(0.06)
+const eroEvapBase    = ref(0.012)
+const eroPin         = ref(0.85)
+const eroPaperScale  = ref(7)
+const eroLowScale    = ref(3)
+const eroLowAmp      = ref(0.35)
+const eroAdvect      = ref(0.9)
+const eroDiffuse     = ref(0.12)
+const eroDryLevel    = ref(0.12)
+const eroBackruns    = ref(2)
+const eroBackrunRad  = ref(0.14)
+const eroBackrunBurst= ref(0.5)
 
 // sim knobs — defaults are the tuned "sim-v3b" preset (best result of the spike sweep):
 // luminous washes, emergent edge tide-lines, warm pooled blooms, per-seed variation.
@@ -61,6 +81,7 @@ const grainScale  = ref(45)
 let app = markRaw({} as Application)
 let grid = markRaw({} as Container)
 let sim: WatercolorSim | null = null
+let eroSim: ErosionSim | null = null
 let silhouettePolys: Vec2[][] = []
 let cachedKey = ''
 let sdfTex: ReturnType<typeof sdfToTexture> | null = null
@@ -159,12 +180,25 @@ function params(): SimParams {
     residual: residual.value, grainScale: grainScale.value,
   }
 }
+function eroParams(): ErosionParams {
+  return {
+    iterations: iterations.value, waterEdge: 0.6, pigment: pigment.value, bloomAmt: bloomAmt.value,
+    erode: eroErode.value, evapBase: eroEvapBase.value, pin: eroPin.value,
+    paperScale: eroPaperScale.value, lowScale: eroLowScale.value, lowAmp: eroLowAmp.value,
+    advect: eroAdvect.value, diffuse: eroDiffuse.value, dryLevel: eroDryLevel.value,
+    backruns: eroBackruns.value, backrunRad: eroBackrunRad.value, backrunBurst: eroBackrunBurst.value,
+    KA: pigGreen.K, SA: pigGreen.S, KB: pigWarm.K, SB: pigWarm.S,
+    paperColor: [0.96, 0.93, 0.84], density: density.value, coverKnee: coverKnee.value,
+    residual: residual.value, grainScale: grainScale.value,
+    debug: debugRaw.value, debugScale: 0.5,
+  }
+}
 function layoutCell(index: number, cell: number) {
   return { x: (index % GRID_COLS) * cell + cell / 2, y: Math.floor(index / GRID_COLS) * cell + cell / 2 }
 }
 
 function rebuild() {
-  if (!app.stage || !silhouettePolys.length || !sim) return
+  if (!app.stage || !silhouettePolys.length || !sim || !eroSim) return
   for (const t of bakedToDestroy) t.destroy(true)
   bakedToDestroy = []
   grid.removeChildren().forEach(c => c.destroy({ children: true }))
@@ -174,11 +208,13 @@ function rebuild() {
   const cell = Math.min(app.screen.width / GRID_COLS, app.screen.height / rows)
   const inner = cell * 0.86
   const sdf = ensureSdf()
+  const erosion = simMode.value === 'erosion'
   const p = params()
+  const ep = eroParams()
   const t0 = performance.now()
 
   for (let seed = 0; seed < n; seed++) {
-    const outRT = sim.bake(sdf, seed, p)
+    const outRT = erosion ? eroSim.bake(sdf, seed, ep) : sim.bake(sdf, seed, p)
     // Copy the reused `out` RT into an independent texture for this cell.
     const tmp = markRaw(new Sprite(outRT))
     const baked = app.renderer.generateTexture({ target: tmp, resolution: 1 })
@@ -200,7 +236,8 @@ function rebuild() {
     label.anchor.set(0.5, 0); label.position.set(0, inner / 2 - 2); container.addChild(label)
     grid.addChild(container)
   }
-  status.value = `${currentPlant()?.commonName ?? plantId.value} · ${n} sims · ${Math.round(performance.now() - t0)}ms`
+  const modeLbl = erosion ? `erosion${debugRaw.value ? ' (raw)' : ''}` : 'shallow-water'
+  status.value = `${currentPlant()?.commonName ?? plantId.value} · ${modeLbl} · ${n} sims · ${Math.round(performance.now() - t0)}ms`
 }
 
 async function reloadAll() {
@@ -222,6 +259,7 @@ onMounted(async () => {
   app = markRaw(new Application())
   await app.init({ canvas: canvasEl.value!, resizeTo: canvasEl.value!.parentElement!, antialias: true, background: 0xf2ead4 })
   sim = markRaw(new WatercolorSim(app.renderer, SIM_SIZE))
+  eroSim = markRaw(new ErosionSim(app.renderer, ERO_SIZE))
   const loaded = await fetchPlantList().catch(() => [] as PlantSummary[])
   plants.value = loaded.sort((a, b) => a.commonName.localeCompare(b.commonName))
   grid = markRaw(new Container()); app.stage.addChild(grid)
@@ -233,10 +271,18 @@ onMounted(async () => {
       iterations, water, pigment, bloomAmt, pressure, damp, curlAmp, curlScale, evap, edgeEvap, capillary,
       advect, depositG, depositW, granule, paperScale, edgeDeposit, dryWet, density, coverKnee, residual,
       grainScale, variants, dilation,
+      // erosion-variant knobs (eroX so they never collide with the shallow-water names)
+      eroErode, eroEvapBase, eroPin, eroPaperScale, eroLowScale, eroLowAmp, eroAdvect, eroDiffuse,
+      eroDryLevel, eroBackruns, eroBackrunRad, eroBackrunBurst,
     }
-    ;(window as unknown as { __waterSimTune?: unknown }).__waterSimTune = async (p: Record<string, number>) => {
+    ;(window as unknown as { __waterSimTune?: unknown }).__waterSimTune = async (p: Record<string, number | string>) => {
       if (typeof p.plantId === 'number') plantId.value = p.plantId
-      for (const [k, v] of Object.entries(p)) { if (k !== 'plantId' && knobMap[k]) knobMap[k].value = v }
+      if (p.simMode === 'erosion' || p.simMode === 'shallow') simMode.value = p.simMode
+      if (typeof p.debug === 'number') debugRaw.value = p.debug > 0.5
+      for (const [k, v] of Object.entries(p)) {
+        if (k === 'plantId' || k === 'simMode' || k === 'debug') continue
+        if (typeof v === 'number' && knobMap[k]) knobMap[k].value = v
+      }
       await nextTick(); await reloadAll(); await nextTick()
     }
   }
@@ -245,13 +291,16 @@ onUnmounted(() => {
   for (const t of bakedToDestroy) t.destroy(true); bakedToDestroy = []
   if (sdfTex) sdfTex.destroy(true)
   if (sim) sim.destroy()
+  if (eroSim) eroSim.destroy()
   if (app.destroy) app.destroy(true, { children: true })
 })
 
 watch([plantId, dilation], reloadAll)
 watch([variants, contourOn, iterations, water, pigment, bloomAmt, pressure, damp, curlAmp, curlScale,
   evap, edgeEvap, capillary, advect, depositG, depositW, granule, paperScale, edgeDeposit, dryWet,
-  density, coverKnee, residual, grainScale], scheduleRebuild)
+  density, coverKnee, residual, grainScale,
+  simMode, debugRaw, eroErode, eroEvapBase, eroPin, eroPaperScale, eroLowScale, eroLowAmp, eroAdvect,
+  eroDiffuse, eroDryLevel, eroBackruns, eroBackrunRad, eroBackrunBurst], scheduleRebuild)
 </script>
 
 <template>
@@ -262,8 +311,35 @@ watch([variants, contourOn, iterations, water, pigment, bloomAmt, pressure, damp
     <div class="panel">
       <div class="title">Watercolor Sim (baked GPU)</div>
       <label>plant <select v-model.number="plantId"><option v-for="p in plants" :key="p.id" :value="p.id">{{ p.commonName }}</option></select></label>
+      <label>mode <select v-model="simMode"><option value="shallow">shallow-water</option><option value="erosion">erosion (fronts)</option></select></label>
       <label>variants <input type="range" min="1" max="12" step="1" v-model.number="variants" /> {{ variants }}</label>
       <label><input type="checkbox" v-model="contourOn" /> contour</label>
+      <label v-if="simMode === 'erosion'"><input type="checkbox" v-model="debugRaw" /> raw tide-line buffer</label>
+      <template v-if="simMode === 'erosion'">
+        <div class="group">erosion / fronts</div>
+        <label>iterations <input type="range" min="16" max="90" step="1" v-model.number="iterations" /> {{ iterations }}</label>
+        <label>pigment <input type="range" min="0.2" max="1" step="0.05" v-model.number="pigment" /> {{ pigment.toFixed(2) }}</label>
+        <label>erode <input type="range" min="0.01" max="0.16" step="0.005" v-model.number="eroErode" /> {{ eroErode.toFixed(3) }}</label>
+        <label>evap base <input type="range" min="0" max="0.04" step="0.002" v-model.number="eroEvapBase" /> {{ eroEvapBase.toFixed(3) }}</label>
+        <label>pin <input type="range" min="0" max="1" step="0.05" v-model.number="eroPin" /> {{ eroPin.toFixed(2) }}</label>
+        <label>paper scale <input type="range" min="3" max="18" step="0.5" v-model.number="eroPaperScale" /> {{ eroPaperScale.toFixed(1) }}</label>
+        <label>low scale <input type="range" min="1.5" max="8" step="0.5" v-model.number="eroLowScale" /> {{ eroLowScale.toFixed(1) }}</label>
+        <label>low amp <input type="range" min="0" max="0.7" step="0.05" v-model.number="eroLowAmp" /> {{ eroLowAmp.toFixed(2) }}</label>
+        <label>advect <input type="range" min="0" max="2.5" step="0.1" v-model.number="eroAdvect" /> {{ eroAdvect.toFixed(1) }}</label>
+        <label>diffuse <input type="range" min="0" max="0.4" step="0.02" v-model.number="eroDiffuse" /> {{ eroDiffuse.toFixed(2) }}</label>
+        <label>dry level <input type="range" min="0.02" max="0.3" step="0.02" v-model.number="eroDryLevel" /> {{ eroDryLevel.toFixed(2) }}</label>
+        <label>backruns <input type="range" min="0" max="5" step="1" v-model.number="eroBackruns" /> {{ eroBackruns }}</label>
+        <label>backrun rad <input type="range" min="0.05" max="0.3" step="0.01" v-model.number="eroBackrunRad" /> {{ eroBackrunRad.toFixed(2) }}</label>
+        <label>backrun burst <input type="range" min="0" max="1.5" step="0.1" v-model.number="eroBackrunBurst" /> {{ eroBackrunBurst.toFixed(1) }}</label>
+        <div class="group">composite</div>
+        <label>bloom amt <input type="range" min="0" max="1.2" step="0.05" v-model.number="bloomAmt" /> {{ bloomAmt.toFixed(2) }}</label>
+        <label>density <input type="range" min="1" max="6" step="0.1" v-model.number="density" /> {{ density.toFixed(1) }}</label>
+        <label>cover knee <input type="range" min="0.2" max="1.2" step="0.05" v-model.number="coverKnee" /> {{ coverKnee.toFixed(2) }}</label>
+        <label>residual <input type="range" min="0" max="1" step="0.05" v-model.number="residual" /> {{ residual.toFixed(2) }}</label>
+        <label>grain scale <input type="range" min="30" max="140" step="5" v-model.number="grainScale" /> {{ grainScale }}</label>
+        <label>dilation <input type="range" min="0" max="14" step="1" v-model.number="dilation" /> {{ dilation }}</label>
+      </template>
+      <template v-if="simMode === 'shallow'">
       <div class="group">sim / flow</div>
       <label>iterations <input type="range" min="8" max="90" step="1" v-model.number="iterations" /> {{ iterations }}</label>
       <label>water <input type="range" min="0.3" max="1.2" step="0.05" v-model.number="water" /> {{ water.toFixed(2) }}</label>
@@ -289,6 +365,7 @@ watch([variants, contourOn, iterations, water, pigment, bloomAmt, pressure, damp
       <label>residual <input type="range" min="0" max="1" step="0.05" v-model.number="residual" /> {{ residual.toFixed(2) }}</label>
       <label>grain scale <input type="range" min="30" max="140" step="5" v-model.number="grainScale" /> {{ grainScale }}</label>
       <label>dilation <input type="range" min="0" max="14" step="1" v-model.number="dilation" /> {{ dilation }}</label>
+      </template>
     </div>
     <div class="status">{{ status }} · drag to pan · double-click to reset</div>
   </div>

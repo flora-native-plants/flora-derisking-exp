@@ -9,13 +9,19 @@
 // random field that is Hermitian-symmetric (so the inverse transform is real) → inverse FFT →
 // histogram-match back to the source tone → write a grayscale PNG height map.
 //
-// Run: npx tsx scripts/gen-paper-height.ts [srcPng] [outPng] [N] [seed] [rolloff]
-//   defaults: watercolor-white.png -> watercolor-height.png, N=512, seed=1, rolloff=0
+// Run: npx tsx scripts/gen-paper-height.ts [srcPng] [outPng] [N] [seed] [rolloff] [highpass]
+//   defaults: watercolor-white.png -> watercolor-height.png, N=512, seed=1, rolloff=0, highpass=0
 //
 // rolloff > 0 low-passes the magnitude spectrum (Gaussian, cutoff = rolloff fraction of Nyquist)
 // so the height becomes BROAD paper undulation instead of per-fiber grain — this is what makes
 // derived normals light as smooth 3D relief rather than sandpaper. In rolloff mode the output is
 // min/max-normalized (clean gradients for normals) instead of histogram-matched to source tone.
+//
+// highpass > 0 is the OPPOSITE: it high-passes the magnitude spectrum (Gaussian, cutoff = highpass
+// fraction of Nyquist) — attenuating low frequencies and keeping the fine grain — so the output is
+// a mid-gray field of fine graphite-tooth speckle (fractions of a stroke width), not broad blobs.
+// Like rolloff, highpass mode min/max-normalizes for clean full-range grain. rolloff and highpass
+// are mutually exclusive.
 
 import { PNG } from 'pngjs'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -26,9 +32,11 @@ const srcPath = resolve(process.argv[2] ?? `${BASE}/watercolor-white.png`)
 const outPath = resolve(process.argv[3] ?? `${BASE}/watercolor-height.png`)
 const N = Number(process.argv[4] ?? 512)          // must be a power of two
 const seed = Number(process.argv[5] ?? 1)
-const rolloff = Number(process.argv[6] ?? 0)      // 0 = off; else Gaussian cutoff frac of Nyquist
+const rolloff = Number(process.argv[6] ?? 0)      // 0 = off; else Gaussian low-pass cutoff frac of Nyquist
+const highpass = Number(process.argv[7] ?? 0)     // 0 = off; else Gaussian high-pass cutoff frac of Nyquist
 
 if ((N & (N - 1)) !== 0) throw new Error(`N must be a power of two, got ${N}`)
+if (rolloff > 0 && highpass > 0) throw new Error('rolloff and highpass are mutually exclusive — set only one')
 
 // --- seeded RNG (mulberry32) ------------------------------------------------
 function mulberry32(a: number) {
@@ -133,6 +141,9 @@ for (let u = 0; u < N; u++) {
     if (rolloff > 0) {
       const r = Math.hypot(fu, fv) / nyq          // 0 at DC .. ~1.41 at corner
       mag *= Math.exp(-(r / rolloff) * (r / rolloff))
+    } else if (highpass > 0) {
+      const r = Math.hypot(fu, fv) / nyq          // 0 at DC .. ~1.41 at corner
+      mag *= 1 - Math.exp(-(r / highpass) * (r / highpass))  // kill lows, keep fine grain
     }
     const ph = Math.atan2(im[k], re[k]) + psi[k]
     re[k] = mag * Math.cos(ph); im[k] = mag * Math.sin(ph)
@@ -144,8 +155,8 @@ fft2d(re, im, true)
 
 // --- map to 0..255 ----------------------------------------------------------
 const out = new Uint8Array(N * N)
-if (rolloff > 0) {
-  // Smooth height for normals: min/max normalize for clean, strong gradients.
+if (rolloff > 0 || highpass > 0) {
+  // Filtered spectrum (broad undulation or fine grain): min/max normalize for clean full range.
   let mn = Infinity, mx = -Infinity
   for (let k = 0; k < N * N; k++) { if (re[k] < mn) mn = re[k]; if (re[k] > mx) mx = re[k] }
   const span = mx - mn || 1
@@ -165,4 +176,7 @@ for (let i = 0; i < N * N; i++) {
   png.data[o + 3] = 255
 }
 writeFileSync(outPath, PNG.sync.write(png))
-console.log(`wrote ${outPath} (${N}x${N}, seamless RPN height, seed ${seed})`)
+const mode = rolloff > 0 ? `low-pass rolloff ${rolloff}`
+  : highpass > 0 ? `high-pass grain, cutoff ${highpass}`
+  : 'histogram-matched paper'
+console.log(`wrote ${outPath} (${N}x${N}, seamless RPN height, seed ${seed}, ${mode})`)
