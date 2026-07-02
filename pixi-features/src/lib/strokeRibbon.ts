@@ -164,6 +164,7 @@ uniform float uGrainFine;    // world-units divisor: sets apparent tooth-cell si
 uniform vec3  uInk;          // warm graphite (NOT uColor — that name is Pixi's reserved mesh tint)
 uniform float uToneAmp;      // 0..1 tone (pressure) variation
 uniform float uTooth;        // 0..1 paper-tooth breakup strength
+uniform float uToothContrast;// 0 even fine tooth -> 1 hard pepper-fleck skips
 uniform float uEdgeSoft;     // 0..1 edge erosion amount (position, not transition width)
 
 float hash11(float p){ p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
@@ -187,10 +188,13 @@ void main(){
   // Q3 tone: perceptual-gamma'd pressure (alpha 0.6 vs 1.0 barely reads on near-white w/ multiply)
   float tone = pow(mix(1.0 - uToneAmp, 1.0, pressure), 1.6);
 
-  // Q1 tooth: near-binary deposit per tooth cell, AA'd; light pressure -> more skips
+  // Q1 tooth: near-binary deposit per tooth cell, AA'd; light pressure -> more skips.
+  // uToothContrast stretches the fine grain toward bimodal + tightens the threshold band, taking
+  // the read from "even fine tooth" (0) to "pepper-fleck skips" (1).
+  float gc = clamp((g - 0.5) * (1.0 + uToothContrast * 3.0) + 0.5, 0.0, 1.0);
   float thresh = mix(0.72, 0.18, pressure);
-  float wth = fwidth(g) + 0.02;
-  float deposit = smoothstep(thresh - wth, thresh + wth, g);
+  float wth = min(fwidth(gc), 0.2) + mix(0.06, 0.006, uToothContrast);
+  float deposit = smoothstep(thresh - wth, thresh + wth, gc);
   float tooth = mix(1.0, deposit, uTooth * (1.0 - 0.6 * pressure));
 
   // Q2 edge: erode the LIMIT where grain is low; transition width stays fwidth (sharp, ragged).
@@ -224,6 +228,7 @@ export interface StrokeRibbonParams {
   widthVar: number   // 0..1 pressure->width swing (keep ~0.3; 1.0 drops thin strokes to sub-pixel)
   toneAmp: number
   tooth: number
+  toothContrast: number // 0 even fine tooth -> 1 hard pepper-fleck skips
   edgeSoft: number
   seed: number       // pressure-field seed (per-run variation is folded in by run index)
 }
@@ -236,6 +241,7 @@ export const STROKE_RIBBON_DEFAULTS: StrokeRibbonParams = {
   widthVar: 0.35,            // ±~35% width band — never sub-pixel at 2.5px base
   toneAmp: 0.55,
   tooth: 0.85,
+  toothContrast: 0.5,        // midway — some fleck character without going harsh
   edgeSoft: 0.5,
   seed: 42,
 }
@@ -266,6 +272,7 @@ export function buildStrokeMeshes(
       uInk:       { value: new Float32Array(p.color), type: 'vec3<f32>' },
       uToneAmp:   { value: p.toneAmp, type: 'f32' },
       uTooth:     { value: p.tooth, type: 'f32' },
+      uToothContrast: { value: p.toothContrast, type: 'f32' },
       uEdgeSoft:  { value: p.edgeSoft, type: 'f32' },
     })
     const shader = new Shader({ glProgram: program(), resources: { uGrainTex: grain, strokeUniforms: uniforms } })

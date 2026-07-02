@@ -26,6 +26,7 @@ const opts = reactive({
   widthVar: STROKE_RIBBON_DEFAULTS.widthVar,
   toneAmp: STROKE_RIBBON_DEFAULTS.toneAmp,
   tooth: STROKE_RIBBON_DEFAULTS.tooth,
+  toothContrast: STROKE_RIBBON_DEFAULTS.toothContrast,
   edgeSoft: STROKE_RIBBON_DEFAULTS.edgeSoft,
   paper: true,
 })
@@ -55,7 +56,8 @@ function rebuild(): void {
     const built = buildStrokeMeshes(ops, grainSource, {
       ...STROKE_RIBBON_DEFAULTS, color: rgb(s.color), seed: opts.seed,
       strokePx: opts.strokeWidth / 2, taperPx: opts.taperPx, grainFine: opts.grainFine,
-      widthVar: opts.widthVar, toneAmp: opts.toneAmp, tooth: opts.tooth, edgeSoft: opts.edgeSoft,
+      widthVar: opts.widthVar, toneAmp: opts.toneAmp, tooth: opts.tooth,
+      toothContrast: opts.toothContrast, edgeSoft: opts.edgeSoft,
     })
     for (const m of built) { world.addChild(m); meshes.push(m) }
   }
@@ -73,6 +75,7 @@ function setLiveUniforms(): void {
     u.uGrainFine = opts.grainFine
     u.uToneAmp = opts.toneAmp
     u.uTooth = opts.tooth
+    u.uToothContrast = opts.toothContrast
     u.uEdgeSoft = opts.edgeSoft
   }
 }
@@ -125,7 +128,7 @@ onUnmounted(() => {
 
 // Geometry-changing params rebuild; width/material params are live uniform updates (no rebuild).
 watch(() => [opts.squiggle, opts.cpSpacing, opts.overshoot, opts.cornerAngle, opts.seed], () => rebuild())
-watch(() => [opts.strokeWidth, opts.taperPx, opts.grainFine, opts.widthVar, opts.toneAmp, opts.tooth, opts.edgeSoft], () => setLiveUniforms())
+watch(() => [opts.strokeWidth, opts.taperPx, opts.grainFine, opts.widthVar, opts.toneAmp, opts.tooth, opts.toothContrast, opts.edgeSoft], () => setLiveUniforms())
 watch(() => opts.paper, () => applyPaper())
 
 function applyPaper(): void {
@@ -169,6 +172,7 @@ function reseed() { opts.seed = Math.floor(Math.random() * 100000) + 1 }
       <label>Width var <b>{{ opts.widthVar.toFixed(2) }}</b><input type="range" min="0" max="0.8" step="0.05" v-model.number="opts.widthVar" /></label>
       <label>Tone amp <b>{{ opts.toneAmp.toFixed(2) }}</b><input type="range" min="0" max="0.9" step="0.05" v-model.number="opts.toneAmp" /></label>
       <label>Tooth <b>{{ opts.tooth.toFixed(2) }}</b><input type="range" min="0" max="1" step="0.05" v-model.number="opts.tooth" /></label>
+      <label>Tooth contrast <b>{{ opts.toothContrast.toFixed(2) }}</b><input type="range" min="0" max="1" step="0.05" v-model.number="opts.toothContrast" /></label>
       <label>Edge softness <b>{{ opts.edgeSoft.toFixed(2) }}</b><input type="range" min="0" max="0.95" step="0.05" v-model.number="opts.edgeSoft" /></label>
       <label class="chk"><input type="checkbox" v-model="opts.paper" /> Paper background</label>
       <button class="btn" @click="reseed">🎲 Re-seed</button>
