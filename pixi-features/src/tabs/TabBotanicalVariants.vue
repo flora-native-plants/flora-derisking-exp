@@ -87,21 +87,20 @@ const pwMixT0         = ref(0.5)    // pigment A→B mix start
 const pwMixT1         = ref(1.0)    // pigment A→B mix end
 const pwBaseDensity   = ref(0.58)   // base wash density
 const pwCoverKnee     = ref(0.55)   // coverage opacity knee
-const pwShadowDX      = ref(0.6)    // shadow direction X (normalized in JS) [-1, 1]
-const pwShadowDY      = ref(-0.4)   // shadow direction Y (normalized in JS) [-1, 1]
-const pwShadowAmp     = ref(0.05)   // shadow amplitude [0, 0.2]
 const pwDebugStage    = ref(0)      // 0 = final; 1..9 = dump a pipeline stage (debug)
+// NOTE: the shader's uShadowDir/uShadowAmp are dead (abandoned-puddle leftovers) — no UI.
+const SHADOW_DIR: [number, number] = [0, -1]
 
 // ── HYBRID: erosion-sim STRUCTURE feeding the procedural MATERIAL path ─────────
 const hybridOn        = ref(false)  // procedural mode: source mass+marks from the erosion sim
 const pwStructMix     = ref(1.0)    // 0 = pure effects, 1 = full sim structure
-const structBlur      = ref(7)      // WIDE wash-mass blur radius (texels)
+const structBlur      = ref(8)      // WIDE wash-mass blur radius (texels)
 const structNarrow    = ref(2.5)    // NARROW blur radius (kills paper flecks, keeps tide scale)
 const structMassLo    = ref(0.22)   // low end of the mass value band
 const structMassHi    = ref(0.62)   // high end of the mass value band
 const structContrast  = ref(0.6)    // 0 = flat 0.5, 1 = full swing
-const structFrontGain = ref(3.5)    // tide-line high-pass gain
-const structFrontThr  = ref(0.05)   // high-pass floor: only strong excursions become fronts
+const structFrontGain = ref(2.5)    // band-pass gain — sparse-band-pass default recipe
+const structFrontThr  = ref(0.10)   // band-pass floor: higher = fewer, calmer fronts (0 = busy)
 const structGain      = ref(0.55)   // deposited-total scale before blur (mean ~ 0.5)
 
 // ── SDF cache: keyed by plantId:dilation, rebuilt only on silhouette changes ──
@@ -370,11 +369,6 @@ function rebuild() {
   const pigA = pigmentKS([0.30, 0.55, 0.28], [0.06, 0.18, 0.06])
   const pigB = pigmentKS([0.58, 0.48, 0.36], [0.22, 0.14, 0.09])
 
-  // Normalize shadow direction in JS before passing to the shader (must be unit-length).
-  const sdx = pwShadowDX.value, sdy = pwShadowDY.value
-  const sdLen = Math.hypot(sdx, sdy) || 1
-  const shadowDir: [number, number] = [sdx / sdLen, sdy / sdLen]
-
   const ink = mode.value === 'sim' ? inkwashParams() : null
   for (let seed = 0; seed < n; seed++) {
     const cellRoot = markRaw(new Container())
@@ -394,8 +388,8 @@ function rebuild() {
         offsetBase: pwOffsetBase.value,
         offsetNoiseAmp: pwOffsetBase.value * 0.35,  // 35% of offset base
         warpAmp: pwWarpAmp.value,
-        shadowDir,
-        shadowAmp: pwShadowAmp.value,
+        shadowDir: SHADOW_DIR,
+        shadowAmp: 0,
         fbmB: pwFbmB.value,
         paperC: pwPaperC.value,
         pigA,
@@ -539,7 +533,6 @@ onMounted(async () => {
       bandCount: pwBandCount, edgeWidth: pwEdgeWidth, bandGain: pwBandGain,
       plateauLo: pwPlateauLo, plateauHi: pwPlateauHi, mixT0: pwMixT0, mixT1: pwMixT1,
       baseDensity: pwBaseDensity, coverKnee: pwCoverKnee,
-      shadowDX: pwShadowDX, shadowDY: pwShadowDY, shadowAmp: pwShadowAmp,
       variants: VARIANT_COUNT, dilation, debugStage: pwDebugStage,
       // hybrid structure knobs
       structMix: pwStructMix, structBlur, structNarrow, structMassLo, structMassHi,
@@ -582,7 +575,6 @@ watch([
   pwPlateauLo, pwPlateauHi,
   pwMixT0, pwMixT1,
   pwBaseDensity, pwCoverKnee,
-  pwShadowDX, pwShadowDY, pwShadowAmp,
   // hybrid structure controls
   hybridOn, pwStructMix, structBlur, structNarrow, structMassLo, structMassHi, structContrast, structFrontGain, structFrontThr, structGain,
 ], scheduleRebuild)
@@ -642,15 +634,12 @@ watch([
         <div class="group">pigment mix</div>
         <label>mix T0 <input type="range" min="0" max="1" step="0.02" v-model.number="pwMixT0" /> {{ pwMixT0.toFixed(2) }}</label>
         <label>mix T1 <input type="range" min="0.2" max="1.2" step="0.02" v-model.number="pwMixT1" /> {{ pwMixT1.toFixed(2) }}</label>
-        <div class="group">shadow</div>
-        <label>shadow DX <input type="range" min="-1" max="1" step="0.05" v-model.number="pwShadowDX" /> {{ pwShadowDX.toFixed(2) }}</label>
-        <label>shadow DY <input type="range" min="-1" max="1" step="0.05" v-model.number="pwShadowDY" /> {{ pwShadowDY.toFixed(2) }}</label>
-        <label>shadow amp <input type="range" min="0" max="0.2" step="0.01" v-model.number="pwShadowAmp" /> {{ pwShadowAmp.toFixed(2) }}</label>
         <div class="group">hybrid — erosion structure</div>
         <label><input type="checkbox" v-model="hybridOn" /> sim mass + tide-line fronts</label>
         <label>struct mix <input type="range" min="0" max="1" step="0.05" v-model.number="pwStructMix" /> {{ pwStructMix.toFixed(2) }}</label>
         <label>mass blur <input type="range" min="2" max="28" step="1" v-model.number="structBlur" /> {{ structBlur }}</label>
         <label>front gain <input type="range" min="0" max="8" step="0.25" v-model.number="structFrontGain" /> {{ structFrontGain.toFixed(2) }}</label>
+        <label>front sparsity <input type="range" min="0" max="0.25" step="0.01" v-model.number="structFrontThr" /> {{ structFrontThr.toFixed(2) }}</label>
         <label>mass hi <input type="range" min="0.3" max="1" step="0.02" v-model.number="structMassHi" /> {{ structMassHi.toFixed(2) }}</label>
       </template>
 
