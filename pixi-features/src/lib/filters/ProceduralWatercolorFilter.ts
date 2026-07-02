@@ -90,7 +90,7 @@ float bandTerm(vec2 uv, float T, float w, int n, float sp){
     float inRange = (k < n) ? 1.0 : 0.0;
     float fk = float(k);
     float Tk = T + 0.04 * fbm(uv*7.0 + fk*17.3 + sp, 3);          // (a) per-band decorrelation
-    float wTk = mix(0.006, 0.045, soft) * w * (0.7 + 0.6*hash1(fk*3.1 + sp)); // (c)+(d) width
+    float wTk = mix(0.009, 0.045, soft) * w * (0.7 + 0.6*hash1(fk*3.1 + sp)); // (c)+(d) width
     float gainK = mix(1.0, 0.4, soft) * (0.55 + 0.9*hash1(fk*7.7 + sp));      // (c)+(d) gain
     float d = (Tk - bandThreshold(k, max(n,1)))/wTk;
     float spike = (d < 0.0) ? smoothstep(-1.0, 0.0, d) : exp(-d*d*0.6);
@@ -119,19 +119,31 @@ float plateau(float d, float lo, float hi){
 // pulls the hue warm, so the warm bloom follows the (per-seed) glaze positions instead
 // of always sitting at the leaf centre.
 vec2 secondaryGlaze(vec2 uv, vec2 c, float r, float seedOff){
-  // Scalloped/lobed front (warp the distance) instead of a smooth circle -> not an "eye".
-  float dist = length(uv - c) + 0.15 * r * abs(fbm(uv*9.0 + seedOff, 3));
-  float wet = 1.0 - smoothstep(0.0, r, dist);          // 1 at centre -> 0 at r
+  vec2 rel = uv - c;
+  // Elliptical stretch along a per-bloom axis (real backruns elongate along the flow).
+  float aAng = hash1(seedOff * 1.7) * 6.283;
+  vec2 ax = vec2(cos(aAng), sin(aAng));
+  float stretch = 1.3 + 0.3 * hash1(seedOff * 2.3);            // 1.3..1.6
+  vec2 relE = vec2(dot(rel, ax), dot(rel, vec2(-ax.y, ax.x)) * stretch);
+  // SIGNED noise front -> concave lobes (pushes in AND out), not just convex fuzz.
+  float dist = length(relE) + (fbm(uv*9.0 + seedOff, 3)) * 0.30 * r;
+  float wet = 1.0 - smoothstep(0.0, r, dist);
   if(wet <= 0.001) return vec2(0.0);
   float Tg = wet + uFbmB * fbm(uv*6.0 + seedOff + 3.7, 4);
   float bandsG = bandTerm(uv, Tg, uEdgeWidth, int(uBandCount), seedOff);
-  // BACKRUN CONSERVATION: a bloom EVACUATES its core (pale) and piles pigment at the front
-  // (dark irregular rim) — not max density at the centre. Mean ≈ 0 so it redistributes.
-  float rim  = exp(-pow((wet - 0.16) / 0.12, 2.0));     // spike near the advancing front
-  float core = smoothstep(0.28, 0.85, wet);            // bloom interior
-  // gentler than a full evacuation: lighten the core, dark irregular rim (not a hole/ring).
-  float dContrib = rim * (0.38 + bandsG * uBandGain) - core * 0.16;
-  float warm = rim + 0.3 * core;                       // mobile pigment travels with the front
+  // Backrun conservation: pale core (lightens WITHIN the wash), dark front piled at the rim.
+  float rim  = exp(-pow((wet - 0.16) / 0.12, 2.0));           // near the advancing front
+  float core = smoothstep(0.28, 0.85, wet);                  // bloom interior
+  // Rim OCCUPANCY along the arc: broken C-shape (not a full ring), biased to the drier side
+  // (flow toward the leaf edge dries first). Where rimOcc is low the front is faint.
+  float ang = atan(rel.y, rel.x);
+  vec2 flowDir = normalize(c - vec2(0.5) + 1e-5);
+  float dirBias = 0.5 + 0.5 * dot(normalize(rel + 1e-5), flowDir);   // 1 on the drier side
+  float rimOcc = smoothstep(0.25, 0.72, fbm(vec2(cos(ang), sin(ang))*1.5 + seedOff, 3) * 0.5 + 0.5)
+               * (0.3 + 0.7 * dirBias);
+  float rimStr = rim * rimOcc;
+  float dContrib = rimStr * (0.22 + bandsG * uBandGain) - core * 0.16;
+  float warm = rimStr + 0.25 * core;                         // neutral (green) where rim absent
   return vec2(dContrib, warm);
 }
 
@@ -160,11 +172,18 @@ void main(){
 
   // 3b) LAYERED GLAZES — two free-floating secondary puddles (seeded positions). Their
   // density adds (overlap darkening) and their bands cross the primary's -> paint process.
-  vec2 c1 = vec2(0.58, 0.42) + 0.24 * vec2(snoise(vec2(sp, 1.0)), snoise(vec2(sp, 2.0)));
-  vec2 c2 = vec2(0.40, 0.62) + 0.24 * vec2(snoise(vec2(sp, 3.0)), snoise(vec2(sp, 4.0)));
-  vec2 g1 = secondaryGlaze(uv, c1, 0.20, sp + 11.0);   // smaller, localised bloom accidents
-  vec2 g2 = secondaryGlaze(uv, c2, 0.15, sp + 23.0);
-  dens = max(dens + g1.x + g2.x, 0.0);   // scooped bloom cores can subtract -> clamp >= 0
+  // 0..2 blooms per seed, jittered size + wide spread (some straddle the silhouette -> the
+  // clip cuts a half-bloom at the crown edge, a boundary-independence cue).
+  float haveG1 = step(hash1(sp + 41.0), 0.75);
+  float haveG2 = step(hash1(sp + 57.0), 0.55);
+  float r1 = 0.20 * (0.6 + 0.8 * hash1(sp + 3.0));   // ±40%
+  float r2 = 0.15 * (0.6 + 0.8 * hash1(sp + 9.0));
+  vec2 c1 = vec2(0.55, 0.45) + 0.30 * vec2(snoise(vec2(sp, 1.0)), snoise(vec2(sp, 2.0)));
+  vec2 c2 = vec2(0.45, 0.58) + 0.34 * vec2(snoise(vec2(sp, 3.0)), snoise(vec2(sp, 4.0)));
+  vec2 g1 = haveG1 * secondaryGlaze(uv, c1, r1, sp + 11.0);
+  vec2 g2 = haveG2 * secondaryGlaze(uv, c2, r2, sp + 23.0);
+  // Scoop lightens the core WITHIN the wash — never below ~55% of the local plateau (no bare paper).
+  dens = max(dens + g1.x + g2.x, densP * 0.55);
 
   // Granulation: fine paper tooth where pigment settles. Two-frequency, gated by dens so
   // the flat plateau stays clean; a high-freq component acts SUBTRACTIVELY on coverage so
