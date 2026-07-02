@@ -97,27 +97,28 @@ function flattenPath(d: string): Pt[][] {
   return subpaths
 }
 
-/** Resample a polyline to control points spaced ~`spacing` apart by arc length. */
+/**
+ * Densify a polyline so no gap exceeds `spacing`, while PRESERVING every input vertex.
+ * Long segments get intermediate points (room for straight runs to wobble/bow), but fine
+ * input detail (features closer than `spacing`) is never averaged away — the old fixed
+ * arc-length resample discarded any vertex between sample points, smoothing plant-symbol
+ * detail. Coincident duplicate vertices are dropped so no zero-length segment reaches the spline.
+ */
 function resample(pts: Pt[], spacing: number): Pt[] {
   if (pts.length < 2) return pts.slice()
-  if (spacing <= 0) return pts.slice() // avoid infinite loop on non-positive spacing
+  if (spacing <= 0) return pts.slice()
   const out: Pt[] = [pts[0]]
-  let acc = 0
   for (let i = 1; i < pts.length; i++) {
     const [x0, y0] = pts[i - 1], [x1, y1] = pts[i]
     const segLen = Math.hypot(x1 - x0, y1 - y0)
-    let from = 0
-    while (acc + (segLen - from) >= spacing) {
-      from += spacing - acc
-      const t = from / segLen
-      out.push([x0 + (x1 - x0) * t, y0 + (y1 - y0) * t])
-      acc = 0
+    if (segLen < 1e-9) continue // drop coincident duplicate
+    const inserts = Math.floor(segLen / spacing)
+    for (let k = 1; k <= inserts; k++) {
+      const t = (k * spacing) / segLen
+      if (t < 1 - 1e-9) out.push([x0 + (x1 - x0) * t, y0 + (y1 - y0) * t])
     }
-    acc += segLen - from
+    out.push([x1, y1]) // always keep the real vertex
   }
-  const last = pts[pts.length - 1]
-  const tail = out[out.length - 1]
-  if (tail[0] !== last[0] || tail[1] !== last[1]) out.push(last)
   return out
 }
 
