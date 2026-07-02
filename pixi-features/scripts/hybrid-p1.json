@@ -1,0 +1,5 @@
+{ "plantId": 2, "variants": 9,
+  "presets": [
+    { "name": "p1-warm", "plantId": 2, "variants": 9, "hybrid": 1, "structMix": 1.0, "structGain": 0.55, "structBlur": 8, "structNarrow": 2.5, "structFrontGain": 0, "structMassLo": 0.18, "structMassHi": 0.72, "structContrast": 0.88, "bandGain": 0.4, "baseDensity": 0.62, "coverKnee": 0.55, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.55, "mixT1": 0.85 }
+  ]
+}

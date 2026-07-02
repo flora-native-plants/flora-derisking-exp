@@ -151,12 +151,21 @@ void main(){
   float mass = 0.55*washBlob(uv, mA, 0.46) + 0.45*washBlob(uv, mB, 0.42) + 0.35*washBlob(uv, mC, 0.38);
   mass = clamp(mass * 0.7 + 0.12 * fbm(uv*3.0 + sp + 5.0, 2), 0.0, 1.0);
 
-  // HYBRID: replace the synthetic soft-wash mass with the sim's emergent structure. The sim
-  // carries the correlated tide-line fronts the effects path lacks; blooms/K-M/grain stay here.
+  // HYBRID: the sim provides the FINE mottle octave; the procedural washblobs above stay as the
+  // COARSE big-mass octave (realtex has ONE darker + ONE lighter zone per instance, 30-50% of crown,
+  // with fine mottle riding on top). Plus a per-seed directional density ramp so each instance has a
+  // subtle dark side. Fine mottle alone read too uniform ("too calm"); this is the coarser octave.
   float structFront = 0.0;
   if (uStructMix > 0.001) {
-    vec2 st = texture(uStruct, uv).xy;    // R = soft wash mass, G = crisp tide-line fronts
-    mass = mix(mass, clamp(st.x, 0.0, 1.0), uStructMix);
+    vec2 st = texture(uStruct, uv).xy;    // R = soft wash mass (fine), G = crisp tide-line fronts
+    float simMass = clamp(st.x, 0.0, 1.0);
+    float coarseMass = mass;              // the procedural washblobs = big low-freq zones
+    float driftAng = hash1(sp + 71.0) * 6.2831853;
+    vec2 driftDir = vec2(cos(driftAng), sin(driftAng));
+    float drift = dot(uv - vec2(0.5), driftDir);        // -0.7..0.7 across the crown
+    // fine sim base + big coarse light/dark zones (centred so it adds AND subtracts) + directional side
+    float combined = clamp(simMass + 0.32 * (coarseMass - 0.5) + 0.09 * drift, 0.0, 1.0);
+    mass = mix(mass, combined, uStructMix);
     structFront = clamp(st.y, 0.0, 1.0);
   }
 
@@ -181,6 +190,12 @@ void main(){
   float rimBand = (1.0 - rimField) * smoothstep(0.35, 0.7, snoise(uv*14.0 + sp) * 0.5 + 0.5);
   dens += 0.2 * rimBand;
 
+  // CONCAVITY darks (realtex habit): its darkest accents settle in the notches BETWEEN lobes —
+  // near the edge AND where the canopy is thin. Crude proxy: edge-proximity * thin-mass. Reads as
+  // paint pooling into the silhouette's concavities.
+  float concavity = (1.0 - rimField) * (1.0 - smoothstep(0.18, 0.5, mass));
+  dens += 0.28 * concavity;
+
   // 3b) 0..2 free-floating secondary glaze puddles (seeded) -> overlap darkening, crossing
   //     tide-lines, and small pale-cored backrun blooms; some straddle the silhouette edge.
   float haveG1 = step(hash1(sp + 41.0), 0.75);
@@ -199,16 +214,24 @@ void main(){
   dens *= 1.0 + 0.15 * grain * smoothstep(0.06, 0.45, dens);
   float grainHi = fbm(uv*110.0 + sp, 2) * 0.5 + 0.5;
 
-  // 4) pigment split: hue follows the tonal MASS (thicker deposits lean warmer) + the bloom pools
-  float warmField = clamp(0.5 * smoothstep(uMixT0, uMixT1, mass) + 0.85 * (g1.y + g2.y), 0.0, 1.0);
+  // 4) pigment split — warmth is tied to the mass, INVERTED (thin = warm): mobile pigment concentrates
+  // where the wash dried late/thin, so realtex's warm brown lives in the LIGHTER regions, not the darks.
+  // (Retires the old sdfN/mixT0 "push" — that was the crude version of this coupling.)
+  float warmMass = smoothstep(0.5, 0.28, mass);                        // only the LIGHTEST mass -> warm pools (not everywhere thin)
+  float warmWobble = 0.05 * fbm(uv*1.7 + sp + 53.0, 1);               // break the pure value->hue mapping
+  float warmField = clamp(uMixT0 * warmMass + 0.85 * (g1.y + g2.y) + warmWobble, 0.0, 1.0);
   // whisper of low-freq green-temperature drift (bluer<->yellower green), so the field isn't one flat green
   float tempWobble = 0.06 * fbm(uv*1.5 + sp + 91.0, 1);
-  float m = clamp(warmField + rimBand * 0.4 + tempWobble, 0.0, 0.75);
+  float m = clamp(warmField + rimBand * 0.4 + tempWobble, 0.0, 0.85);
   vec3 K = mix(uKA, uKB, m) * dens;                 // concentration scales K only
   vec3 S = mix(uSA, uSB, m);
   vec3 R = kmReflectance(K, S);
   float cover = clamp(dens / uCoverKnee, 0.0, 1.0);
-  cover *= 1.0 - 0.28 * smoothstep(0.55, 0.85, grainHi);   // paper shows through
+  cover *= 1.0 - 0.36 * smoothstep(0.55, 0.85, grainHi);   // paper tooth shows through (+30% vs 0.28)
+  // COVER-FLOOR in warm/bloom cores: realtex's blooms are thin warm PAINT, not thin coverage. Without
+  // this the scooped cores fall below the knee -> mix toward paper -> cream/bleach. Flooring cover here
+  // renders them as low-concentration pigment-B through K-M -> pale peachy-brown.
+  cover = max(cover, uMixT1 * warmField);
   vec3 col = mix(uPaperColor, R, cover);
   col += (ditherBlue(gl_FragCoord.xy) - 0.5) / 255.0;      // 5) dither
 

@@ -83,9 +83,9 @@ const pwEdgeWidth     = ref(1.2)    // band edge width multiplier
 const pwBandGain      = ref(0.7)    // band density gain
 const pwPlateauLo     = ref(0.2)    // plateau low threshold
 const pwPlateauHi     = ref(0.62)   // plateau high threshold
-const pwMixT0         = ref(0.5)    // pigment A→B mix start
-const pwMixT1         = ref(1.0)    // pigment A→B mix end
-const pwBaseDensity   = ref(0.58)   // base wash density
+const pwMixT0         = ref(0.5)    // warm strength (mass-coupled, thin=warm)
+const pwMixT1         = ref(0.82)   // cover-floor in warm/bloom cores (thin PAINT, not bleach)
+const pwBaseDensity   = ref(0.54)   // base wash density
 const pwCoverKnee     = ref(0.55)   // coverage opacity knee
 const pwDebugStage    = ref(0)      // 0 = final; 1..9 = dump a pipeline stage (debug)
 // NOTE: the shader's uShadowDir/uShadowAmp are dead (abandoned-puddle leftovers) — no UI.
@@ -96,10 +96,10 @@ const hybridOn        = ref(false)  // procedural mode: source mass+marks from t
 const pwStructMix     = ref(1.0)    // 0 = pure effects, 1 = full sim structure
 const structBlur      = ref(8)      // WIDE wash-mass blur radius (texels)
 const structNarrow    = ref(2.5)    // NARROW blur radius (kills paper flecks, keeps tide scale)
-const structMassLo    = ref(0.22)   // low end of the mass value band
-const structMassHi    = ref(0.62)   // high end of the mass value band
-const structContrast  = ref(0.6)    // 0 = flat 0.5, 1 = full swing
-const structFrontGain = ref(2.5)    // band-pass gain — sparse-band-pass default recipe
+const structMassLo    = ref(0.18)   // low end of the mass value band
+const structMassHi    = ref(0.72)   // high end of the mass value band
+const structContrast  = ref(0.88)   // 0 = flat 0.5, 1 = full swing
+const structFrontGain = ref(0)      // fronts OFF by default (best look); raise to add tide-lines
 const structFrontThr  = ref(0.10)   // band-pass floor: higher = fewer, calmer fronts (0 = busy)
 const structGain      = ref(0.55)   // deposited-total scale before blur (mean ~ 0.5)
 
@@ -632,8 +632,8 @@ watch([
         <label>plateau hi <input type="range" min="0.2" max="0.9" step="0.02" v-model.number="pwPlateauHi" /> {{ pwPlateauHi.toFixed(2) }}</label>
         <label>cover knee <input type="range" min="0.1" max="1" step="0.05" v-model.number="pwCoverKnee" /> {{ pwCoverKnee.toFixed(2) }}</label>
         <div class="group">pigment mix</div>
-        <label>mix T0 <input type="range" min="0" max="1" step="0.02" v-model.number="pwMixT0" /> {{ pwMixT0.toFixed(2) }}</label>
-        <label>mix T1 <input type="range" min="0.2" max="1.2" step="0.02" v-model.number="pwMixT1" /> {{ pwMixT1.toFixed(2) }}</label>
+        <label>warm strength <input type="range" min="0" max="1" step="0.02" v-model.number="pwMixT0" /> {{ pwMixT0.toFixed(2) }}</label>
+        <label>bloom cover-floor <input type="range" min="0" max="1" step="0.02" v-model.number="pwMixT1" /> {{ pwMixT1.toFixed(2) }}</label>
         <div class="group">hybrid — erosion structure</div>
         <label><input type="checkbox" v-model="hybridOn" /> sim mass + tide-line fronts</label>
         <label>struct mix <input type="range" min="0" max="1" step="0.05" v-model.number="pwStructMix" /> {{ pwStructMix.toFixed(2) }}</label>
