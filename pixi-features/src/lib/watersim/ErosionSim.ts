@@ -43,6 +43,11 @@ export interface ErosionParams {
   advect: number
   diffuse: number
   dryLevel: number
+  frontGain: number
+  depRate: number
+  dryDump: number
+  releaseSoft: number
+  depthBias: number
   // backruns
   backruns: number
   backrunRad: number
@@ -107,9 +112,11 @@ export class ErosionSim {
 
     const eroU = new UniformGroup({
       uTexel: { value: texel, type: 'vec2<f32>' }, uSeed: { value: 0, type: 'f32' },
-      uErode: { value: 0.06, type: 'f32' }, uEvapBase: { value: 0.012, type: 'f32' }, uPin: { value: 0.85, type: 'f32' },
-      uPaperScale: { value: 7, type: 'f32' }, uLowScale: { value: 3, type: 'f32' }, uLowAmp: { value: 0.35, type: 'f32' },
+      uErode: { value: 1.0, type: 'f32' }, uEvapBase: { value: 0.012, type: 'f32' }, uPin: { value: 0.5, type: 'f32' },
+      uPaperScale: { value: 4, type: 'f32' }, uLowScale: { value: 3, type: 'f32' }, uLowAmp: { value: 0.25, type: 'f32' },
+      uStep: { value: 0, type: 'f32' }, uReleaseSoft: { value: 0.09, type: 'f32' }, uDepthBias: { value: 0.55, type: 'f32' },
       uAdvect: { value: 0.9, type: 'f32' }, uDiffuse: { value: 0.12, type: 'f32' }, uDryLevel: { value: 0.12, type: 'f32' },
+      uFrontGain: { value: 4, type: 'f32' }, uDepRate: { value: 0.6, type: 'f32' }, uDryDump: { value: 0.25, type: 'f32' },
       uReWetActive: { value: 0, type: 'f32' }, uReWetC: { value: f32([0.5, 0.5]), type: 'vec2<f32>' },
       uReWetRad: { value: 0.14, type: 'f32' }, uReWetBurst: { value: 0.5, type: 'f32' },
     })
@@ -154,6 +161,8 @@ export class ErosionSim {
     eu.uSeed = seed; eu.uErode = p.erode; eu.uEvapBase = p.evapBase; eu.uPin = p.pin
     eu.uPaperScale = p.paperScale; eu.uLowScale = p.lowScale; eu.uLowAmp = p.lowAmp
     eu.uAdvect = p.advect; eu.uDiffuse = p.diffuse; eu.uDryLevel = p.dryLevel
+    eu.uFrontGain = p.frontGain; eu.uDepRate = p.depRate; eu.uDryDump = p.dryDump
+    eu.uReleaseSoft = p.releaseSoft; eu.uDepthBias = p.depthBias
     eu.uReWetRad = p.backrunRad; eu.uReWetBurst = p.backrunBurst
     this.eroMesh.shader!.resources.uSdf = sdf.source
     this.depMesh.shader!.resources.uSdf = sdf.source
@@ -171,6 +180,8 @@ export class ErosionSim {
     let cSrc = this.accA, cDst = this.accB
 
     for (let i = 0; i < p.iterations; i++) {
+      // global drying pressure climbs 0 -> 1 across the run (drives stick-slip release)
+      eu.uStep = p.iterations > 1 ? i / (p.iterations - 1) : 1
       // backrun this step?
       const br = backrunSteps.get(i)
       if (br) { eu.uReWetActive = 1; (eu.uReWetC as Float32Array).set(br) } else { eu.uReWetActive = 0 }

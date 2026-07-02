@@ -19,12 +19,15 @@ uniform sampler2D uA;        // R=wet G=susG B=susW
 uniform sampler2D uSdf;      // R=sdfN A=inside
 uniform vec2  uTexel;
 uniform float uSeed;
-uniform float uErode;        // front recession speed
-uniform float uEvapBase;     // uniform evaporation floor (guarantees completion)
-uniform float uPin;          // paper-ridge pinning strength (0..1)
+uniform float uErode;        // front snap sharpness (how hard a released pixel recedes)
+uniform float uEvapBase;     // guaranteed completion push near the end of the run
+uniform float uPin;          // paper contribution to the release barrier (stick-slip)
 uniform float uPaperScale;   // paper-height frequency (low -> few broad ridges/lines)
 uniform float uLowScale;     // low-freq waterline waviness frequency
 uniform float uLowAmp;       // waviness amplitude
+uniform float uStep;         // global drying pressure this iteration (0..1, rises to 1)
+uniform float uReleaseSoft;  // softness of the barrier->release transition
+uniform float uDepthBias;    // how much interior (sdfN) resists -> front sweeps inward
 uniform float uAdvect;       // suspended advection toward the front
 uniform float uDiffuse;      // suspended diffusion within the wet region
 uniform float uDryLevel;     // wetness below which remaining pigment dumps
@@ -76,23 +79,46 @@ void main(){
 
   vec4 s = texture(uA, vUV);
   float wet = s.r;
+  float sdfN = sdf.r;   // 0 at the rim -> 1 in the deep interior
 
   float wl = wetAt(vUV - vec2(uTexel.x, 0.0));
   float wr = wetAt(vUV + vec2(uTexel.x, 0.0));
   float wd = wetAt(vUV - vec2(0.0, uTexel.y));
   float wu = wetAt(vUV + vec2(0.0, uTexel.y));
-  float wetMin = min(min(wl, wr), min(wd, wu));
 
-  // paper ridges (broad, low-freq -> few, low-curvature tide-lines) and waterline waviness
-  float paper = fbm(vUV * uPaperScale + uSeed * 1.7, 4) * 0.5 + 0.5;   // 0..1
+  // Broad, low-freq paper ridges (few low-curvature lines) + a low-freq waterline wobble.
+  float paper = fbm(vUV * uPaperScale + uSeed * 1.7, 3) * 0.5 + 0.5;   // 0..1 (broad ridges)
   float low   = fbm(vUV * uLowScale  + uSeed * 3.1, 3) * 0.5 + 0.5;    // 0..1
 
-  // stick-slip recession: resisted at ridges (pin), waved by low noise.
-  float resist = uPin * paper;
-  float front = max(0.0, wet - wetMin);                 // >0 if a neighbour is drier
-  float wave  = 1.0 - uLowAmp + 2.0 * uLowAmp * low;    // ~[1-amp, 1+amp]
-  float drop  = (uErode * front + uEvapBase) * (1.0 - resist) * wave;
-  float wetNext = clamp(wet - drop, 0.0, 1.0);
+  // THRESHOLD DRYING FRONT (organic, grid-artifact-free).
+  // Each pixel has a drying BARRIER; the global pressure uStep climbs 0->1 and a pixel dries
+  // when uStep passes its barrier. The waterline is therefore the iso-contour barrier==uStep,
+  // sweeping inward as uStep rises. The barrier is a SMOOTH field: interior depth (front
+  // echoes the silhouette and sweeps inward), broad low-freq paper ridges (the front dwells
+  // at ridges -> nested lines spaced by paper topology), a low-freq wobble, and seeded
+  // interior WELLS (nuclei that dry early so their expanding dry zones COLLIDE with the edge
+  // front == watershed tide-lines). Unlike a min-filter this has no Manhattan diamond; unlike
+  // the effects path it is not drawn as uniform bands -- deposition (below) is weighted by the
+  // ADVECTED pigment that piled at the front, so only some contours read as strong lines.
+  float sp = fract(sin(uSeed * 12.9898) * 43758.5453) * 100.0;
+  float barrier = uDepthBias * sdfN + uPin * paper + uLowAmp * (low - 0.5);
+  for(int k = 0; k < 2; k++){
+    float fk = float(k);
+    float ang = fract(sin((sp + fk*4.7)) * 43758.5) * 6.283;
+    float rad = 0.10 + 0.22 * fract(sin((sp + fk*8.3)) * 24634.6);
+    vec2 c = vec2(0.5) + rad * vec2(cos(ang), sin(ang));
+    float br = 0.14 + 0.12 * fract(sin((sp + fk*11.9)) * 15731.7);
+    // heavily warped, shallow well: nucleates an interior front that collides with the edge
+    // front (watershed line) WITHOUT punching a clean geometric light disc.
+    float d = length(vUV - c) + 0.08 * fbm(vUV*4.0 + sp + fk*5.0, 3);
+    barrier -= 0.22 * smoothstep(br, 0.0, d);
+  }
+  barrier = clamp(barrier, 0.02, 1.0);
+  float driedTarget = 1.0 - smoothstep(barrier - uReleaseSoft, barrier + uReleaseSoft, uStep);
+  float wetNext = min(wet, driedTarget);   // monotonic drying toward the sweeping front
+  // guaranteed completion at the end of the run
+  wetNext = min(wetNext, 1.0 - smoothstep(0.92, 1.0, uStep));
+  wetNext = clamp(wetNext, 0.0, 1.0);
 
   // advect suspended pigment toward the front (down the wetness gradient) + diffuse
   vec2 gradW = vec2(wr - wl, wu - wd) * 0.5;
@@ -105,22 +131,30 @@ void main(){
   float susG = mix(back.g, diffG, uDiffuse);
   float susW = mix(back.b, diffW, uDiffuse);
 
-  // fraction of this cell's water that left this step (+ full dump once nearly dry)
-  float lossFrac = clamp((wet - wetNext) / max(wet, 1e-3), 0.0, 1.0);
-  float dryDump = 1.0 - smoothstep(0.0, uDryLevel, wetNext);
-  lossFrac = max(lossFrac, dryDump);
+  // COFFEE-RING GATE: pigment strands where the contact line IS (|grad wet| high), not
+  // uniformly as water leaves -- that is what turns smooth throughput into a crisp line.
+  // As the (stick-slip) waterline recedes each step, successive lines nest. A cell that
+  // just receded this step (wet dropped) AND sits on the waterline deposits the most; a
+  // final settle dumps whatever is left once the cell goes bone dry.
+  float wln = length(vec2(wr - wl, wu - wd));               // contact-line sharpness
+  float onLine = clamp(wln * uFrontGain, 0.0, 1.0);
+  float receded = clamp((wet - wetNext) * 40.0, 0.0, 1.0);  // did the line pass here now?
+  float dryDump = (1.0 - smoothstep(0.0, uDryLevel, wetNext)) * uDryDump;
+  float depFrac = clamp(onLine * receded * uDepRate + dryDump, 0.0, 1.0);
 
-  // remove what deposits (approx conserve; DEPOSIT pass adds s.g/s.b * lossFrac)
-  float susGNext = max(0.0, susG - s.g * lossFrac);
-  float susWNext = max(0.0, susW - s.b * lossFrac);
+  // remove what deposits (approx conserve; DEPOSIT pass adds s.g/s.b * depFrac)
+  float susGNext = max(0.0, susG - s.g * depFrac);
+  float susWNext = max(0.0, susW - s.b * depFrac);
 
-  // backrun: re-wet a disc + re-inject pigment -> a fresh nested ring when it re-dries
+  // backrun: dump a pigment burst into the STILL-WET wash (a fresh drop landing) -> it gets
+  // carried to and stranded at the next fronts == a bloom with its own ring. We do NOT force
+  // a persistent re-wet (that leaves a stuck-wet light disc); a light, decaying nudge only.
   if(uReWetActive > 0.5){
     float d = length(vUV - uReWetC);
-    float disc = smoothstep(uReWetRad, 0.0, d);
-    wetNext = max(wetNext, 0.9 * disc);
+    float disc = smoothstep(uReWetRad, 0.0, d) * step(0.05, wetNext);  // only within wet paper
     susGNext += uReWetBurst * disc;
+    wetNext = min(driedTarget, max(wetNext, 0.55 * disc));   // gentle, still bounded by drying
   }
 
-  finalColor = vec4(wetNext, susGNext, susWNext, lossFrac);
+  finalColor = vec4(wetNext, susGNext, susWNext, depFrac);
 }

@@ -40,15 +40,20 @@ const simMode = ref<'shallow' | 'erosion'>('shallow')
 const debugRaw = ref(false)   // erosion only: show the raw deposited tide-line buffer
 
 // erosion-variant knobs (defaults tuned for a handful of nested, low-curvature tide-lines)
-const eroErode       = ref(0.06)
+const eroErode       = ref(1.0)
 const eroEvapBase    = ref(0.012)
-const eroPin         = ref(0.85)
-const eroPaperScale  = ref(7)
+const eroPin         = ref(0.5)
+const eroPaperScale  = ref(4)
 const eroLowScale    = ref(3)
-const eroLowAmp      = ref(0.35)
+const eroLowAmp      = ref(0.25)
 const eroAdvect      = ref(0.9)
 const eroDiffuse     = ref(0.12)
 const eroDryLevel    = ref(0.12)
+const eroFrontGain   = ref(4)
+const eroDepRate     = ref(0.6)
+const eroDryDump     = ref(0.25)
+const eroReleaseSoft = ref(0.09)
+const eroDepthBias   = ref(0.55)
 const eroBackruns    = ref(2)
 const eroBackrunRad  = ref(0.14)
 const eroBackrunBurst= ref(0.5)
@@ -186,6 +191,8 @@ function eroParams(): ErosionParams {
     erode: eroErode.value, evapBase: eroEvapBase.value, pin: eroPin.value,
     paperScale: eroPaperScale.value, lowScale: eroLowScale.value, lowAmp: eroLowAmp.value,
     advect: eroAdvect.value, diffuse: eroDiffuse.value, dryLevel: eroDryLevel.value,
+    frontGain: eroFrontGain.value, depRate: eroDepRate.value, dryDump: eroDryDump.value,
+    releaseSoft: eroReleaseSoft.value, depthBias: eroDepthBias.value,
     backruns: eroBackruns.value, backrunRad: eroBackrunRad.value, backrunBurst: eroBackrunBurst.value,
     KA: pigGreen.K, SA: pigGreen.S, KB: pigWarm.K, SB: pigWarm.S,
     paperColor: [0.96, 0.93, 0.84], density: density.value, coverKnee: coverKnee.value,
@@ -273,7 +280,8 @@ onMounted(async () => {
       grainScale, variants, dilation,
       // erosion-variant knobs (eroX so they never collide with the shallow-water names)
       eroErode, eroEvapBase, eroPin, eroPaperScale, eroLowScale, eroLowAmp, eroAdvect, eroDiffuse,
-      eroDryLevel, eroBackruns, eroBackrunRad, eroBackrunBurst,
+      eroDryLevel, eroFrontGain, eroDepRate, eroDryDump, eroReleaseSoft, eroDepthBias,
+      eroBackruns, eroBackrunRad, eroBackrunBurst,
     }
     ;(window as unknown as { __waterSimTune?: unknown }).__waterSimTune = async (p: Record<string, number | string>) => {
       if (typeof p.plantId === 'number') plantId.value = p.plantId
@@ -300,7 +308,8 @@ watch([variants, contourOn, iterations, water, pigment, bloomAmt, pressure, damp
   evap, edgeEvap, capillary, advect, depositG, depositW, granule, paperScale, edgeDeposit, dryWet,
   density, coverKnee, residual, grainScale,
   simMode, debugRaw, eroErode, eroEvapBase, eroPin, eroPaperScale, eroLowScale, eroLowAmp, eroAdvect,
-  eroDiffuse, eroDryLevel, eroBackruns, eroBackrunRad, eroBackrunBurst], scheduleRebuild)
+  eroDiffuse, eroDryLevel, eroFrontGain, eroDepRate, eroDryDump, eroReleaseSoft, eroDepthBias,
+  eroBackruns, eroBackrunRad, eroBackrunBurst], scheduleRebuild)
 </script>
 
 <template>
@@ -328,6 +337,11 @@ watch([variants, contourOn, iterations, water, pigment, bloomAmt, pressure, damp
         <label>advect <input type="range" min="0" max="2.5" step="0.1" v-model.number="eroAdvect" /> {{ eroAdvect.toFixed(1) }}</label>
         <label>diffuse <input type="range" min="0" max="0.4" step="0.02" v-model.number="eroDiffuse" /> {{ eroDiffuse.toFixed(2) }}</label>
         <label>dry level <input type="range" min="0.02" max="0.3" step="0.02" v-model.number="eroDryLevel" /> {{ eroDryLevel.toFixed(2) }}</label>
+        <label>release soft <input type="range" min="0.01" max="0.2" step="0.01" v-model.number="eroReleaseSoft" /> {{ eroReleaseSoft.toFixed(2) }}</label>
+        <label>depth bias <input type="range" min="0" max="1" step="0.05" v-model.number="eroDepthBias" /> {{ eroDepthBias.toFixed(2) }}</label>
+        <label>front gain <input type="range" min="1" max="12" step="0.5" v-model.number="eroFrontGain" /> {{ eroFrontGain.toFixed(1) }}</label>
+        <label>dep rate <input type="range" min="0.1" max="1.5" step="0.05" v-model.number="eroDepRate" /> {{ eroDepRate.toFixed(2) }}</label>
+        <label>dry dump <input type="range" min="0" max="0.8" step="0.05" v-model.number="eroDryDump" /> {{ eroDryDump.toFixed(2) }}</label>
         <label>backruns <input type="range" min="0" max="5" step="1" v-model.number="eroBackruns" /> {{ eroBackruns }}</label>
         <label>backrun rad <input type="range" min="0.05" max="0.3" step="0.01" v-model.number="eroBackrunRad" /> {{ eroBackrunRad.toFixed(2) }}</label>
         <label>backrun burst <input type="range" min="0" max="1.5" step="0.1" v-model.number="eroBackrunBurst" /> {{ eroBackrunBurst.toFixed(1) }}</label>

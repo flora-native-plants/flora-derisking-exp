@@ -2,7 +2,7 @@
   "plantId": 2,
   "variants": 9,
   "presets": [
-    { "name": "sim-erosion-debug", "simMode": "erosion", "debug": 1, "variants": 4 },
-    { "name": "sim-erosion", "simMode": "erosion", "debug": 0, "variants": 9 }
+    { "name": "sim-erosion-debug", "simMode": "erosion", "debug": 1, "variants": 4, "eroReleaseSoft": 0.09, "eroPaperScale": 4, "eroDepthBias": 0.55 },
+    { "name": "sim-erosion", "simMode": "erosion", "debug": 0, "variants": 9, "eroReleaseSoft": 0.09, "eroPaperScale": 4, "eroDepthBias": 0.55, "density": 0.85, "coverKnee": 1.2, "residual": 0.45, "grainScale": 60 }
   ]
 }

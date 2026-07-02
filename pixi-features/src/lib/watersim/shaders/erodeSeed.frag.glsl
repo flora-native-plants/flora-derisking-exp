@@ -44,21 +44,11 @@ void main(){
   float sp = hash1(uSeed) * 100.0;
   float sdfN = sdf.r;
 
-  // wet mask: interior wet, rim drier -> front recedes inward from the edge
-  float wet = mix(uWaterEdge, 1.0, clamp(sdfN, 0.0, 1.0));
+  // wet mask: start (nearly) fully wet; the receding-front dynamics + interior barrier wells
+  // (baked in the ERODE pass) drive all structure, so no dry nuclei are seeded here.
+  float wet = 1.0;
   // a little large-scale lumpiness so the initial waterline is not perfectly radial
-  wet *= 0.9 + 0.1 * (fbm(vUV*2.5 + sp, 3) * 0.5 + 0.5);
-
-  // 2 seeded interior dry nuclei -> extra receding fronts + watershed collisions
-  for(int k=0;k<2;k++){
-    float fk = float(k);
-    float ang = hash1(sp + fk*4.7) * 6.283;
-    float rad = 0.10 + 0.22 * hash1(sp + fk*8.3);
-    vec2 c = vec2(0.5) + rad * vec2(cos(ang), sin(ang));
-    float br = 0.05 + 0.06 * hash1(sp + fk*11.9);
-    float d = length(vUV - c);
-    wet -= 0.5 * smoothstep(br, 0.0, d);
-  }
+  wet *= 0.92 + 0.08 * (fbm(vUV*2.5 + sp, 3) * 0.5 + 0.5);
   wet = clamp(wet, 0.0, 1.0);
 
   // suspended green with paper-scale variation
