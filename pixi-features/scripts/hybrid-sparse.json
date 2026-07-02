@@ -1,0 +1,5 @@
+{ "plantId": 2, "variants": 9,
+  "presets": [
+    { "name": "hybrid-bp-sparse", "plantId": 2, "variants": 9, "hybrid": 1, "structMix": 1.0, "structBlur": 8, "structNarrow": 2.5, "structGain": 0.55, "structMassLo": 0.22, "structMassHi": 0.62, "structFrontGain": 2.5, "structFrontThr": 0.10, "bandGain": 0.35, "baseDensity": 0.58, "coverKnee": 0.55, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 }
+  ]
+}

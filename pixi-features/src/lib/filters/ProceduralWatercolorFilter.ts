@@ -1,5 +1,6 @@
 // src/lib/filters/ProceduralWatercolorFilter.ts
 import { Filter, GlProgram, UniformGroup, defaultFilterVert, Texture } from 'pixi.js'
+import type { TextureSource } from 'pixi.js'
 import { pigmentKS } from '../watercolor/pigmentKS'
 // The fragment shader lives in its own .glsl file (syntax highlighting, linting, and one
 // source of truth); Vite's `?raw` imports it as a string for Pixi's GlProgram.
@@ -30,7 +31,9 @@ export interface ProcWaterOpts {
   mixT1?: number              // default 0.85
   baseDensity?: number        // default 0.5
   coverKnee?: number          // default 0.35
-  debugStage?: number         // 0 = final render; 1..8 = dump an intermediate stage
+  debugStage?: number         // 0 = final render; 1..9 = dump an intermediate stage
+  // HYBRID: sim-baked structure map (R=mass, G=fronts). Leave structMix 0 for pure effects.
+  structMix?: number          // 0 = pure effects (default); 1 = mass+marks from the sim
 }
 
 export class ProceduralWatercolorFilter extends Filter {
@@ -66,13 +69,23 @@ export class ProceduralWatercolorFilter extends Filter {
       uBaseDensity: { value: o.baseDensity ?? 0.5,                   type: 'f32' },
       uCoverKnee:   { value: o.coverKnee   ?? 0.35,                  type: 'f32' },
       uDebugStage:  { value: o.debugStage  ?? 0,                     type: 'f32' },
+      uStructMix:   { value: o.structMix   ?? 0,                     type: 'f32' },
     })
     super({
       glProgram: GlProgram.from({ vertex: defaultFilterVert, fragment: FRAG }),
-      resources: { procUniforms: g },
+      resources: {
+        procUniforms: g,
+        uStruct: Texture.WHITE.source,   // placeholder until a sim structure map is bound
+      },
     })
     this.g = g
   }
+  /** Bind the sim-baked structure map (R=mass, G=fronts) and enable the hybrid path. */
+  setStructure(source: TextureSource, mix = 1): void {
+    ;(this.resources as unknown as { uStruct: TextureSource }).uStruct = source
+    this.g.uniforms.uStructMix = mix
+  }
+  setStructMix(v: number)    { this.g.uniforms.uStructMix   = v }
   setSeed(v: number)         { this.g.uniforms.uSeed        = v }
   setFbmB(v: number)         { this.g.uniforms.uFbmB        = v }
   setPaperC(v: number)       { this.g.uniforms.uPaperC      = v }

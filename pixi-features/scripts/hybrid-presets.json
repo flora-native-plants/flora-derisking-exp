@@ -1,0 +1,9 @@
+{
+  "plantId": 2,
+  "variants": 9,
+  "presets": [
+    { "name": "hybrid-fronts-bp", "plantId": 2, "variants": 1, "hybrid": 1, "structMix": 1.0, "structBlur": 7, "structNarrow": 2.5, "structGain": 0.55, "structFrontGain": 4, "structFrontThr": 0.04, "debugStage": 9 },
+    { "name": "hybrid-bp",         "plantId": 2, "variants": 9, "hybrid": 1, "structMix": 1.0, "structBlur": 7, "structNarrow": 2.5, "structGain": 0.55, "structMassLo": 0.22, "structMassHi": 0.62, "structFrontGain": 4, "structFrontThr": 0.04, "bandGain": 0.4, "baseDensity": 0.58, "coverKnee": 0.55, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 },
+    { "name": "hybrid-massonly",   "plantId": 2, "variants": 9, "hybrid": 1, "structMix": 1.0, "structBlur": 7, "structGain": 0.55, "structMassLo": 0.22, "structMassHi": 0.62, "structFrontThr": 0.9, "bandGain": 0.4, "baseDensity": 0.58, "coverKnee": 0.55, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 }
+  ]
+}

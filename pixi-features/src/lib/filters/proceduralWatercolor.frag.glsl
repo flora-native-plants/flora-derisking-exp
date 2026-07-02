@@ -11,6 +11,12 @@ precision highp float;
 in vec2 vTextureCoord;
 out vec4 finalColor;
 uniform sampler2D uTexture;
+// HYBRID: optional sim-baked STRUCTURE map (R=soft wash mass, G=crisp tide-line fronts),
+// from ErosionSim.bakeStructure(). uStructMix 0 -> pure effects (byte-identical); 1 -> mass
+// and dark marks come from the sim (sim = STRUCTURE, this shader = MATERIAL). Placeholder is
+// Texture.WHITE when unused; the uStructMix=0 gate keeps it out of the math entirely.
+uniform sampler2D uStruct;
+uniform float uStructMix;
 uniform float uTexelWorld, uSeed, uOffBase, uOffNoiseAmp, uWarpAmp, uShadowAmp, uFbmB, uPaperC;
 uniform float uInteriorScale;
 uniform vec2 uShadowDir;
@@ -145,6 +151,15 @@ void main(){
   float mass = 0.55*washBlob(uv, mA, 0.46) + 0.45*washBlob(uv, mB, 0.42) + 0.35*washBlob(uv, mC, 0.38);
   mass = clamp(mass * 0.7 + 0.12 * fbm(uv*3.0 + sp + 5.0, 2), 0.0, 1.0);
 
+  // HYBRID: replace the synthetic soft-wash mass with the sim's emergent structure. The sim
+  // carries the correlated tide-line fronts the effects path lacks; blooms/K-M/grain stay here.
+  float structFront = 0.0;
+  if (uStructMix > 0.001) {
+    vec2 st = texture(uStruct, uv).xy;    // R = soft wash mass, G = crisp tide-line fronts
+    mass = mix(mass, clamp(st.x, 0.0, 1.0), uStructMix);
+    structFront = clamp(st.y, 0.0, 1.0);
+  }
+
   // 2) SOFT fill-steps: cumulative broad tonal masses with wide soft shoulders. densP (a thin flat
   // base = the lowest step) + fill gives the tonal FORM and a real density RANGE (-> luminosity, since
   // thin regions let K-M reflectance rise toward paper).
@@ -155,8 +170,12 @@ void main(){
 
   // 3) BANDS = rim spikes ONLY at the fill-step transitions (bandTerm driven by `mass`, thresholds
   // aligned) -> every dark mark BOUNDS a tone (painted), not a free-floating line (crack).
+  // HYBRID: the synthetic bandTerm and the sim fronts are UNCORRELATED mark fields; running both
+  // reintroduces the "crack" tell. So fade the synthetic bands out as uStructMix rises, and let the
+  // sim's deposited fronts (which physically sit on the mass gradient) be the only dark marks.
   float bands = min(bandTerm(uv, mass, uEdgeWidth, 4, sp), 0.85);
-  dens += bands * uBandGain;
+  dens += bands * uBandGain * (1.0 - uStructMix);
+  dens += structFront * uBandGain * uStructMix;
 
   // weak WARM tidied mask rim (halved + occupancy dropouts -> not a triple outline)
   float rimBand = (1.0 - rimField) * smoothstep(0.35, 0.7, snoise(uv*14.0 + sp) * 0.5 + 0.5);
@@ -203,5 +222,6 @@ void main(){
   if(stg == 6){ finalColor = vec4(vec3(m),1.0); return; }                       // pigment mix m
   if(stg == 7){ finalColor = vec4(vec3(cover),1.0); return; }                   // coverage alpha
   if(stg == 8){ finalColor = vec4(R,1.0); return; }                            // K-M reflectance
+  if(stg == 9){ finalColor = vec4(vec3(structFront),1.0); return; }            // hybrid sim fronts
   finalColor = vec4(col, 1.0);                                                  // 0 = final
 }

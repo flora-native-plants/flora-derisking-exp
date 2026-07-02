@@ -21,6 +21,8 @@ import { computeMaskSdf } from '../lib/watercolor/maskSdf'
 import { sdfToTexture } from '../lib/watercolor/sdfTexture'
 import { ProceduralWatercolorFilter } from '../lib/filters/ProceduralWatercolorFilter'
 import { pigmentKS } from '../lib/watercolor/pigmentKS'
+import { ErosionSim, type StructureParams } from '../lib/watersim/ErosionSim'
+import { hybridEroParams } from '../lib/watercolor/hybridStructure'
 import { useFps } from '../shared/useFps'
 
 const { fps, frameMs } = useFps()
@@ -88,7 +90,19 @@ const pwCoverKnee     = ref(0.55)   // coverage opacity knee
 const pwShadowDX      = ref(0.6)    // shadow direction X (normalized in JS) [-1, 1]
 const pwShadowDY      = ref(-0.4)   // shadow direction Y (normalized in JS) [-1, 1]
 const pwShadowAmp     = ref(0.05)   // shadow amplitude [0, 0.2]
-const pwDebugStage    = ref(0)      // 0 = final; 1..8 = dump a pipeline stage (debug)
+const pwDebugStage    = ref(0)      // 0 = final; 1..9 = dump a pipeline stage (debug)
+
+// ── HYBRID: erosion-sim STRUCTURE feeding the procedural MATERIAL path ─────────
+const hybridOn        = ref(false)  // procedural mode: source mass+marks from the erosion sim
+const pwStructMix     = ref(1.0)    // 0 = pure effects, 1 = full sim structure
+const structBlur      = ref(7)      // WIDE wash-mass blur radius (texels)
+const structNarrow    = ref(2.5)    // NARROW blur radius (kills paper flecks, keeps tide scale)
+const structMassLo    = ref(0.22)   // low end of the mass value band
+const structMassHi    = ref(0.62)   // high end of the mass value band
+const structContrast  = ref(0.6)    // 0 = flat 0.5, 1 = full swing
+const structFrontGain = ref(3.5)    // tide-line high-pass gain
+const structFrontThr  = ref(0.05)   // high-pass floor: only strong excursions become fronts
+const structGain      = ref(0.55)   // deposited-total scale before blur (mean ~ 0.5)
 
 // ── SDF cache: keyed by plantId:dilation, rebuilt only on silhouette changes ──
 type SdfEntry = { sdfTex: ReturnType<typeof sdfToTexture>; texelWorld: number; interiorScale: number }
@@ -102,6 +116,7 @@ let washTex = markRaw({} as Texture)
 let grainTex = markRaw({} as Texture)
 let silhouettePolys: Vec2[][] = []
 let cachedKey = ''
+let eroSim: ErosionSim | null = null   // lazy — only built when the hybrid path is first used
 
 function currentPlant(): PlantSummary | undefined {
   return plants.value.find(p => p.id === plantId.value)
@@ -306,6 +321,15 @@ function layoutCell(index: number, cell: number): { x: number; y: number } {
   return { x: col * cell + cell / 2, y: row * cell + cell / 2 }
 }
 
+function currentStructParams(): StructureParams {
+  return {
+    gain: structGain.value, blurRadius: structBlur.value, narrowRadius: structNarrow.value,
+    massLo: structMassLo.value, massHi: structMassHi.value,
+    massContrast: structContrast.value, frontGain: structFrontGain.value,
+    frontThresh: structFrontThr.value,
+  }
+}
+
 /** Get or build the per-plant SDF entry (cached by plantId:dilation). */
 function getOrBuildSdf(): SdfEntry {
   const key = `${plantId.value}:${dilation.value}`
@@ -387,6 +411,15 @@ function rebuild() {
         coverKnee: pwCoverKnee.value,
         debugStage: pwDebugStage.value,
       })
+
+      // HYBRID: bake the erosion-sim structure map for this seed and bind it to the filter.
+      // structOut is reused per bake, but we generateTexture() this seed's cell immediately
+      // below (before the next seed's bake), so the filter consumes it while it is still valid.
+      if (hybridOn.value) {
+        if (!eroSim) eroSim = markRaw(new ErosionSim(app.renderer))
+        const struct = eroSim.bakeStructure(sdfTex, seed, hybridEroParams(), currentStructParams())
+        filter.setStructure(struct.source, pwStructMix.value)
+      }
 
       // 2× bake: the filter runs on a Sprite OF THE SDF TEXTURE (so the shader reads it
       // via the auto-provided uTexture input with correct vTextureCoord mapping), sized
@@ -508,12 +541,16 @@ onMounted(async () => {
       baseDensity: pwBaseDensity, coverKnee: pwCoverKnee,
       shadowDX: pwShadowDX, shadowDY: pwShadowDY, shadowAmp: pwShadowAmp,
       variants: VARIANT_COUNT, dilation, debugStage: pwDebugStage,
+      // hybrid structure knobs
+      structMix: pwStructMix, structBlur, structNarrow, structMassLo, structMassHi,
+      structContrast, structFrontGain, structFrontThr, structGain,
     }
     ;(window as unknown as { __procTune?: unknown }).__procTune = async (params: Record<string, number>) => {
       mode.value = 'procedural'
       if (typeof params.plantId === 'number') plantId.value = params.plantId
+      if (typeof params.hybrid === 'number') hybridOn.value = params.hybrid > 0.5
       for (const [k, v] of Object.entries(params)) {
-        if (k === 'plantId') continue
+        if (k === 'plantId' || k === 'hybrid') continue
         if (knobMap[k]) knobMap[k].value = v
       }
       await nextTick()
@@ -529,6 +566,7 @@ onUnmounted(() => {
   sdfCacheMap.clear()
   for (const t of bakedTexturesToDestroy) t.destroy(true)
   bakedTexturesToDestroy = []
+  if (eroSim) { eroSim.destroy(); eroSim = null }
   if (app.destroy) app.destroy(true, { children: true })
 })
 
@@ -545,6 +583,8 @@ watch([
   pwMixT0, pwMixT1,
   pwBaseDensity, pwCoverKnee,
   pwShadowDX, pwShadowDY, pwShadowAmp,
+  // hybrid structure controls
+  hybridOn, pwStructMix, structBlur, structNarrow, structMassLo, structMassHi, structContrast, structFrontGain, structFrontThr, structGain,
 ], scheduleRebuild)
 </script>
 
@@ -606,6 +646,12 @@ watch([
         <label>shadow DX <input type="range" min="-1" max="1" step="0.05" v-model.number="pwShadowDX" /> {{ pwShadowDX.toFixed(2) }}</label>
         <label>shadow DY <input type="range" min="-1" max="1" step="0.05" v-model.number="pwShadowDY" /> {{ pwShadowDY.toFixed(2) }}</label>
         <label>shadow amp <input type="range" min="0" max="0.2" step="0.01" v-model.number="pwShadowAmp" /> {{ pwShadowAmp.toFixed(2) }}</label>
+        <div class="group">hybrid — erosion structure</div>
+        <label><input type="checkbox" v-model="hybridOn" /> sim mass + tide-line fronts</label>
+        <label>struct mix <input type="range" min="0" max="1" step="0.05" v-model.number="pwStructMix" /> {{ pwStructMix.toFixed(2) }}</label>
+        <label>mass blur <input type="range" min="2" max="28" step="1" v-model.number="structBlur" /> {{ structBlur }}</label>
+        <label>front gain <input type="range" min="0" max="8" step="0.25" v-model.number="structFrontGain" /> {{ structFrontGain.toFixed(2) }}</label>
+        <label>mass hi <input type="range" min="0.3" max="1" step="0.02" v-model.number="structMassHi" /> {{ structMassHi.toFixed(2) }}</label>
       </template>
 
       <template v-else>
