@@ -90,18 +90,31 @@ and stranded at the next fronts.
 
 **Bottom line:** the variant delivers the load-bearing effect the spike set out to prove
 (correlated, low-curvature, organic nested drying fronts with history — the thing static iso-band
-noise structurally cannot make) at a fraction of the complexity. It is the right *engine*; it
+noise structurally cannot make) with a structurally *simpler* engine. It is the right *engine*; it
 still needs a restraint pass on the *composite* to reach realtex.
 
-### Cost
+> **Reproducibility note:** the composite params that produced `.watercolor/sim-erosion.png`
+> (density 0.85 / coverKnee 1.2 / residual 0.45 / grainScale 60) live in
+> `scripts/erosion-presets.json`, NOT in the tab defaults. The tab's shared composite refs still
+> default to the shallow-water-tuned values (can't change them without regressing shallow mode), so
+> opening the tab in erosion mode renders a darker result than the committed screenshot. Reproduce
+> via `npx tsx scripts/watersim-render.ts --file scripts/erosion-presets.json`.
 
-- **Sim:** ~40 iters x 2 passes at 160x160 = extremely cheap. Measured bake loop ~**0.9 ms per
-  instance** (status line "9 sims · 8ms"), dominated by the composite + `generateTexture` copy, not
-  the sim. Structurally simpler than shallow-water (2 passes, no velocity/pressure/divergence solve)
-  and 2.5x fewer texels (160 vs 256). Both variants are already sub-ms/instance; erosion is the
-  cheaper and simpler of the two.
-- The HUD `frameMs` (~40-72ms) is the full 9-cell rebuild (bake + generateTexture + Vue scene), not
-  per-instance sim cost.
+### Cost — honest measurement, NOT "a fraction of the cost"
+
+The spike's founding premise was "a fraction of the cost." **The measurements do not support that**:
+
+- erosion: "9 sims · 8ms" (4-5ms on some runs)
+- shallow-water sim-v3b: "9 sims · 6ms"
+
+That is **comparable wall-clock, within single-run/cross-resolution noise — not a fraction**. The
+algorithmic saving is real for the *sim step alone* (erosion = 2 passes at 160x160 with no
+velocity/pressure/divergence solve; shallow = 3 passes at 256x256), but end-to-end bake time is
+**dominated by fixed overhead** — the shared Kubelka-Munk composite + the `generateTexture` copy,
+which both variants run identically. So the theoretical saving does not surface in wall-clock at
+these sizes. Honest read: **erosion is meaningfully SIMPLER, but not meaningfully FASTER end-to-end;
+both are overhead-bound at ~0.7-0.9 ms/instance.** The HUD `frameMs` (~40-72ms) is the full 9-cell
+rebuild (bake + generateTexture + Vue scene), not per-instance sim cost.
 
 ### What I'd do next (restraint pass, ~half a day)
 

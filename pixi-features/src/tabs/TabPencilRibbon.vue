@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * Pencil Ribbon (Phase B) — strokes as ribbon MESHES with a stroke-space graphite shader,
- * instead of the full-screen PaperGrainFilter (which stairstepped + tanked fps at zoom).
- * Geometry from the cached kinematic op-list, CPU-expanded to a ribbon, rebuilt on zoom for
- * screen-constant width (wobble stays stable — it's cached). Material (tone/taper/ragged/tooth)
- * is in the fragment shader; meshes multiply-blend over a screen-fixed paper sprite.
+ * Pencil Ribbon (Phase C) — strokes as ribbon MESHES with a stroke-space graphite shader.
+ * Geometry is built ONCE from the cached kinematic op-list; the ribbon expansion, width and tip
+ * taper now live in the VERTEX shader, so zoom and stroke width are single uniform writes (no
+ * per-zoom CPU rebuild). Material (thresholded paper tooth, ragged edge, pressure tone, tip fade)
+ * is in the fragment shader; meshes multiply-blend over a screen-fixed paper sprite. Deposition
+ * grain uses a dedicated HIGH-frequency tile; the broad watercolor tile drives only the background.
  */
 import { ref, reactive, onMounted, onUnmounted, markRaw, watch } from 'vue'
 import { Application, Assets, Container, Sprite, Texture, Mesh } from 'pixi.js'
@@ -20,7 +21,8 @@ const canvasEl = ref<HTMLCanvasElement>()
 const opts = reactive({
   strokeWidth: 2.5,
   squiggle: 6, cpSpacing: 40, overshoot: 4, cornerAngle: 35, seed: 42,
-  taperLen: STROKE_RIBBON_DEFAULTS.taperLen,
+  taperPx: STROKE_RIBBON_DEFAULTS.taperPx,
+  grainFine: STROKE_RIBBON_DEFAULTS.grainFine,
   toneAmp: STROKE_RIBBON_DEFAULTS.toneAmp,
   tooth: STROKE_RIBBON_DEFAULTS.tooth,
   edgeSoft: STROKE_RIBBON_DEFAULTS.edgeSoft,
@@ -31,7 +33,7 @@ let app = markRaw({} as Application)
 let world = markRaw({} as Container)
 let paperSprite = markRaw({} as Sprite)
 let paperFilter = markRaw({} as PaperGrainFilter)
-let paperSource = markRaw({} as any)
+let grainSource = markRaw({} as any)   // high-frequency deposition tile for the ribbon shader
 let meshes: Mesh[] = []
 let camX = 0, camY = 0, zoom = 1
 let isPanning = false, panStart = { x: 0, y: 0 }
@@ -40,35 +42,43 @@ function rgb(c: number): [number, number, number] {
   return [((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255]
 }
 
+// Build geometry once per generator/seed change. Width/zoom/material are live uniforms.
 function rebuild(): void {
   world.removeChildren().forEach((c) => c.destroy())
   meshes = []
-  const halfWidth = (opts.strokeWidth / zoom) / 2
   for (const s of pencilTestShapes()) {
     const ops = kinematicOpsForPath(s.d, {
       squiggle: opts.squiggle, cpSpacing: opts.cpSpacing, seed: opts.seed,
       overshoot: opts.overshoot, cornerAngle: opts.cornerAngle,
     })
-    const built = buildStrokeMeshes(ops, halfWidth, paperSource, {
-      ...STROKE_RIBBON_DEFAULTS, color: rgb(s.color),
-      taperLen: opts.taperLen, toneAmp: opts.toneAmp, tooth: opts.tooth, edgeSoft: opts.edgeSoft,
+    const built = buildStrokeMeshes(ops, grainSource, {
+      ...STROKE_RIBBON_DEFAULTS, color: rgb(s.color), seed: opts.seed,
+      strokePx: opts.strokeWidth / 2, taperPx: opts.taperPx, grainFine: opts.grainFine,
+      toneAmp: opts.toneAmp, tooth: opts.tooth, edgeSoft: opts.edgeSoft,
     })
     for (const m of built) { world.addChild(m); meshes.push(m) }
   }
-  setMeshZoom()
+  setLiveUniforms()
 }
 
-function setMeshZoom(): void {
+// Push zoom + all material/width values onto every mesh's uniform group (no rebuild).
+function setLiveUniforms(): void {
   for (const m of meshes) {
     const u = (m.shader!.resources.strokeUniforms as any).uniforms
     u.uZoom = zoom
+    u.uStrokePx = opts.strokeWidth / 2
+    u.uTaperPx = opts.taperPx
+    u.uGrainFine = opts.grainFine
+    u.uToneAmp = opts.toneAmp
+    u.uTooth = opts.tooth
+    u.uEdgeSoft = opts.edgeSoft
   }
 }
 
 function syncCamera(): void {
   if (paperSprite.position) paperSprite.position.set(-camX, -camY)
   paperFilter.setCamera?.(camX, camY, zoom)
-  setMeshZoom()
+  setLiveUniforms()
 }
 
 onMounted(async () => {
@@ -85,10 +95,12 @@ onMounted(async () => {
   world = markRaw(new Container())
   app.stage.addChild(world)
 
-  const tex = await Assets.load('/textures/paper/watercolor-height.png')
-  tex.source.style.addressMode = 'repeat'; tex.source.style.update()
-  paperSource = markRaw(tex.source)
-  paperFilter.setPaperTexture(tex.source)
+  // Background relief tile (broad) for the paper filter; deposition grain tile (fine) for strokes.
+  const paperTex = await Assets.load('/textures/paper/watercolor-height.png')
+  const grainTex = await Assets.load('/textures/paper/graphite-grain.png')
+  grainTex.source.style.addressMode = 'repeat'; grainTex.source.style.update()
+  grainSource = markRaw(grainTex.source)
+  paperFilter.setPaperTexture(paperTex.source)
   applyPaper()
   rebuild()
 
@@ -106,8 +118,9 @@ onUnmounted(() => {
   app?.destroy(true, { children: true, texture: true, context: true })
 })
 
-// Rebuild on any generator/material change; paper toggle is cheap.
-watch(() => [opts.strokeWidth, opts.squiggle, opts.cpSpacing, opts.overshoot, opts.cornerAngle, opts.seed, opts.taperLen, opts.toneAmp, opts.tooth, opts.edgeSoft], () => rebuild())
+// Geometry-changing params rebuild; width/material params are live uniform updates (no rebuild).
+watch(() => [opts.squiggle, opts.cpSpacing, opts.overshoot, opts.cornerAngle, opts.seed], () => rebuild())
+watch(() => [opts.strokeWidth, opts.taperPx, opts.grainFine, opts.toneAmp, opts.tooth, opts.edgeSoft], () => setLiveUniforms())
 watch(() => opts.paper, () => applyPaper())
 
 function applyPaper(): void {
@@ -126,8 +139,7 @@ function onWheel(e: WheelEvent) {
   camX = sx - wx * zoom; camY = sy - wy * zoom
   app.stage.position.set(camX, camY)
   world.scale.set(zoom)
-  syncCamera()
-  rebuild() // half-width is world-space; rebuild from the cached op-list (wobble stays stable)
+  syncCamera() // width is screen-constant via uZoom uniform — no geometry rebuild on zoom
 }
 function onPD(e: PointerEvent) { isPanning = true; panStart = { x: e.clientX - camX, y: e.clientY - camY }; (e.target as HTMLElement).setPointerCapture(e.pointerId) }
 function onPM(e: PointerEvent) { if (!isPanning) return; camX = e.clientX - panStart.x; camY = e.clientY - panStart.y; app.stage.position.set(camX, camY); syncCamera() }
@@ -144,17 +156,18 @@ function reseed() { opts.seed = Math.floor(Math.random() * 100000) + 1 }
       <div>zoom: {{ zoom.toFixed(2) }}×</div>
     </div>
     <div class="panel">
-      <div class="title">Pencil Ribbon · mesh + stroke shader (Phase B)</div>
-      <label>Stroke width <b>{{ opts.strokeWidth.toFixed(1) }}px</b><input type="range" min="0.5" max="8" step="0.5" v-model.number="opts.strokeWidth" /></label>
+      <div class="title">Pencil Ribbon · vertex-expanded mesh (Phase C)</div>
+      <label>Stroke width <b>{{ opts.strokeWidth.toFixed(1) }}px</b><input type="range" min="0.5" max="16" step="0.5" v-model.number="opts.strokeWidth" /></label>
       <label>Squiggle <b>{{ opts.squiggle.toFixed(1) }}</b><input type="range" min="0" max="20" step="0.5" v-model.number="opts.squiggle" /></label>
-      <label>Taper len <b>{{ opts.taperLen.toFixed(0) }}</b><input type="range" min="0" max="60" step="1" v-model.number="opts.taperLen" /></label>
+      <label>Taper px <b>{{ opts.taperPx.toFixed(0) }}</b><input type="range" min="0" max="60" step="1" v-model.number="opts.taperPx" /></label>
+      <label>Grain scale <b>{{ opts.grainFine.toFixed(0) }}</b><input type="range" min="40" max="800" step="10" v-model.number="opts.grainFine" /></label>
       <label>Tone amp <b>{{ opts.toneAmp.toFixed(2) }}</b><input type="range" min="0" max="0.9" step="0.05" v-model.number="opts.toneAmp" /></label>
       <label>Tooth <b>{{ opts.tooth.toFixed(2) }}</b><input type="range" min="0" max="1" step="0.05" v-model.number="opts.tooth" /></label>
       <label>Edge softness <b>{{ opts.edgeSoft.toFixed(2) }}</b><input type="range" min="0" max="0.95" step="0.05" v-model.number="opts.edgeSoft" /></label>
       <label class="chk"><input type="checkbox" v-model="opts.paper" /> Paper background</label>
       <button class="btn" @click="reseed">🎲 Re-seed</button>
     </div>
-    <div class="hint"><kbd>scroll</kbd> zoom · <kbd>drag</kbd> pan — ribbon meshes, no full-screen filter</div>
+    <div class="hint"><kbd>scroll</kbd> zoom · <kbd>drag</kbd> pan — vertex-expanded ribbon, zoom is a uniform</div>
   </div>
 </template>
 
