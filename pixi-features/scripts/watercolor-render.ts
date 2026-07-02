@@ -78,10 +78,16 @@ async function run(): Promise<void> {
 
   // Screenshot just the <canvas> element (clean, no UI chrome).
   const canvas = page.locator('canvas').first()
+  const PANEL_W = 400 // left control panel width to clip out for clean leaf-only captures
   const shoot = async (name: string) => {
     await page.waitForTimeout(450) // let the bake settle
     const outPath = join(OUTPUT_DIR, `${name}.png`)
-    await canvas.screenshot({ path: outPath })
+    const box = await canvas.boundingBox()
+    if (box && box.width > PANEL_W) {
+      await page.screenshot({ path: outPath, clip: { x: box.x + PANEL_W, y: box.y, width: box.width - PANEL_W, height: box.height } })
+    } else {
+      await canvas.screenshot({ path: outPath })
+    }
     console.log(`✓ ${outPath}`)
   }
   const tune = async (params: Record<string, number>) => {

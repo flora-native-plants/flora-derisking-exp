@@ -84,7 +84,7 @@ const pwPlateauHi     = ref(0.62)   // plateau high threshold
 const pwMixT0         = ref(0.5)    // pigment A→B mix start
 const pwMixT1         = ref(1.0)    // pigment A→B mix end
 const pwBaseDensity   = ref(0.42)   // base wash density
-const pwCoverKnee     = ref(0.55)   // coverage opacity knee
+const pwCoverKnee     = ref(0.85)   // coverage opacity knee
 const pwShadowDX      = ref(0.6)    // shadow direction X (normalized in JS) [-1, 1]
 const pwShadowDY      = ref(-0.4)   // shadow direction Y (normalized in JS) [-1, 1]
 const pwShadowAmp     = ref(0.05)   // shadow amplitude [0, 0.2]
@@ -341,8 +341,9 @@ function rebuild() {
   const t0 = performance.now()
 
   // Pre-build pigment K/S pairs once (same for all seeds in one rebuild).
-  const pigA = pigmentKS([0.35, 0.62, 0.48], [0.06, 0.20, 0.13])
-  const pigB = pigmentKS([0.80, 0.56, 0.24], [0.26, 0.13, 0.05])
+  // A = settling olive-green (less minty than before), B = grayed warm brown (~#a07560).
+  const pigA = pigmentKS([0.32, 0.48, 0.30], [0.07, 0.16, 0.08])
+  const pigB = pigmentKS([0.72, 0.55, 0.40], [0.26, 0.13, 0.05])
 
   // Normalize shadow direction in JS before passing to the shader (must be unit-length).
   const sdx = pwShadowDX.value, sdy = pwShadowDY.value

@@ -54,13 +54,16 @@ float seedPhase(){ return fract(sin(uSeed * 12.9898) * 43758.5453) * 100.0; }
 // A tiny warp per seed makes the field organic. Returns sdfN; exposes rimField + inside.
 float sampleField(vec2 uv, out float inside, out float rimField){
   float sp = seedPhase();
-  // LOW-frequency, larger warp so the radial iso-bands get pushed off-centre and
-  // wander organically (a tiny high-freq warp left them concentric on the leaf centre).
-  vec2 wuv = uv + uWarpAmp * vec2(fbm(uv*1.6 + sp, 3), fbm(uv*1.6 - sp + 4.3, 3));
-  vec4 s = texture(uTexture, clamp(wuv, 0.001, 0.999));
-  rimField = s.g;                 // 0 at silhouette edge -> 1 by ~10px inside
-  inside = step(0.004, s.r);      // sdfN > ~1/255 => inside the silhouette
-  return s.r;                     // sdfN (radial 0->1)
+  // inside/rim/registration come from the UNWARPED lookup so the fill matches the
+  // silhouette exactly (warping the mask itself detached the fill from the contour).
+  vec4 s0 = texture(uTexture, uv);
+  rimField = s0.g;                 // 0 at silhouette edge -> 1 by ~10px inside
+  inside = step(0.004, s0.r);      // sdfN > ~1/255 => inside the silhouette
+  // Warp ONLY the interior structure (tapered to 0 near the boundary) so tide-lines
+  // wander without pulling the fill off the plant shape.
+  float edgeDamp = smoothstep(0.02, 0.30, s0.r);
+  vec2 wuv = uv + uWarpAmp * edgeDamp * vec2(fbm(uv*1.6 + sp, 3), fbm(uv*1.6 - sp + 4.3, 3));
+  return texture(uTexture, clamp(wuv, 0.001, 0.999)).r;  // warped sdfN for the drying field
 }
 
 float dryingField(vec2 uv, float sdfN){
@@ -74,27 +77,27 @@ float bandThreshold(int k, int n){
   float f = float(k+1)/float(n+1);      // 0..1
   return pow(f, 1.6);                    // tighter near rim (small T)
 }
-// asymmetric front profile: sharp on the low-T (advancing) side, exp decay into high-T.
-// Band width is measured in RESOLUTION-INDEPENDENT T-space (a fraction of the drying
-// range), NOT render-target pixels — a grad/fwidth normalization sizes bands in bake-target
-// pixels, so the 2x bake + downscale to the cell shrank them below visibility (Fable's
-// multi-resolution caveat). T-space width survives the downscale.
-float bandTerm(float T, float w, int n){
-  float wT = 0.008 + 0.02 * w;            // w in [0.4..3] -> narrow T-space width ~0.016..0.068
+float hash1(float x){ return fract(sin(x*12.9898) * 43758.5453); }
+
+// Tide-lines, NOT contour lines. Each band is (a) independently warped so bands aren't
+// parallel level-sets of one field, (b) gated by a low-freq OCCUPANCY mask so it exists
+// for an arc then fades/vanishes/reappears, (c) width/gain jittered per band, and (d)
+// crisp↔feathered along its length via a low-freq "residual wetness" field.
+float bandTerm(vec2 uv, float T, float w, int n, float sp){
   float acc = 0.0;
-  // fixed 7-iteration loop + mask (non-const \`break\` fails some mobile compilers).
+  float soft = fbm(uv*2.0 + sp + 31.0, 3) * 0.5 + 0.5;   // 0..1: high = feathered, low = crisp
   for(int k=0;k<7;k++){
     float inRange = (k < n) ? 1.0 : 0.0;
-    float tau = bandThreshold(k, max(n,1));
-    float d = (T - tau)/wT;               // signed, in T-space band-widths
-    // COMPACT asymmetric line: sharp rise below tau, gaussian (short) decay inward.
-    // Compact tails + MAX-combine keep the 5-7 bands DISCRETE — summing long exp
-    // tails smeared adjacent bands into a smooth gradient (no visible rings).
+    float fk = float(k);
+    float Tk = T + 0.04 * fbm(uv*7.0 + fk*17.3 + sp, 3);          // (a) per-band decorrelation
+    float wTk = mix(0.006, 0.045, soft) * w * (0.7 + 0.6*hash1(fk*3.1 + sp)); // (c)+(d) width
+    float gainK = mix(1.0, 0.4, soft) * (0.55 + 0.9*hash1(fk*7.7 + sp));      // (c)+(d) gain
+    float d = (Tk - bandThreshold(k, max(n,1)))/wTk;
     float spike = (d < 0.0) ? smoothstep(-1.0, 0.0, d) : exp(-d*d*0.6);
-    acc = max(acc, spike * inRange);      // MAX, not sum: overlapping tails don't accumulate.
+    float occ = smoothstep(0.32, 0.62, fbm(uv*3.0 + fk*9.1 + sp, 3) * 0.5 + 0.5); // (b) occupancy
+    acc = max(acc, spike * occ * gainK * inRange);
   }
-  return acc;   // corner at d=0 is the intended sharp pigment front; output is baked (static),
-                // so no temporal Mach-band shimmer.
+  return acc;
 }
 
 // mirror of reflectanceInfinite() — K-M in K/S space, per channel
@@ -116,13 +119,20 @@ float plateau(float d, float lo, float hi){
 // pulls the hue warm, so the warm bloom follows the (per-seed) glaze positions instead
 // of always sitting at the leaf centre.
 vec2 secondaryGlaze(vec2 uv, vec2 c, float r, float seedOff){
-  float warp = uWarpAmp * fbm(uv*1.6 + seedOff, 3);
-  float wet = 1.0 - smoothstep(0.0, r, length(uv - c) + warp * r); // soft: 1 at centre -> 0 at r
+  // Scalloped/lobed front (warp the distance) instead of a smooth circle -> not an "eye".
+  float dist = length(uv - c) + 0.15 * r * abs(fbm(uv*9.0 + seedOff, 3));
+  float wet = 1.0 - smoothstep(0.0, r, dist);          // 1 at centre -> 0 at r
   if(wet <= 0.001) return vec2(0.0);
   float Tg = wet + uFbmB * fbm(uv*6.0 + seedOff + 3.7, 4);
-  float bandsG = bandTerm(Tg, uEdgeWidth, int(uBandCount));
-  float f = wet * wet;  // fades smoothly to 0 at the blob edge (no hard ring)
-  return vec2(f * (uBaseDensity * 0.45 + bandsG * uBandGain), f);
+  float bandsG = bandTerm(uv, Tg, uEdgeWidth, int(uBandCount), seedOff);
+  // BACKRUN CONSERVATION: a bloom EVACUATES its core (pale) and piles pigment at the front
+  // (dark irregular rim) — not max density at the centre. Mean ≈ 0 so it redistributes.
+  float rim  = exp(-pow((wet - 0.16) / 0.12, 2.0));     // spike near the advancing front
+  float core = smoothstep(0.28, 0.85, wet);            // bloom interior
+  // gentler than a full evacuation: lighten the core, dark irregular rim (not a hole/ring).
+  float dContrib = rim * (0.38 + bandsG * uBandGain) - core * 0.16;
+  float warm = rim + 0.3 * core;                       // mobile pigment travels with the front
+  return vec2(dContrib, warm);
 }
 
 void main(){
@@ -140,12 +150,13 @@ void main(){
   // 2) plateau BEFORE bands (density field only, never T)
   float densP = plateau(base, uPlateauLo, uPlateauHi);
   // 3) + bands (additive in density)
-  float bands = bandTerm(T, uEdgeWidth, int(uBandCount));
+  float bands = bandTerm(uv, T, uEdgeWidth, int(uBandCount), sp);
   float dens = densP + bands * uBandGain;
 
-  // weak WARM mask rim: rimField ~0 at the silhouette edge -> 1 by ~10px inside.
-  float rimBand = (1.0 - rimField) * (0.5 + 0.5 * snoise(uv*20.0 + sp));
-  dens += 0.4 * rimBand;
+  // weak WARM mask rim: rimField ~0 at the silhouette edge -> 1 by ~10px inside. Halved +
+  // occupancy dropouts so it doesn't form a triple outline with the first band + contour.
+  float rimBand = (1.0 - rimField) * smoothstep(0.35, 0.7, snoise(uv*14.0 + sp) * 0.5 + 0.5);
+  dens += 0.2 * rimBand;
 
   // 3b) LAYERED GLAZES — two free-floating secondary puddles (seeded positions). Their
   // density adds (overlap darkening) and their bands cross the primary's -> paint process.
@@ -153,21 +164,24 @@ void main(){
   vec2 c2 = vec2(0.42, 0.60) + 0.18 * vec2(snoise(vec2(sp, 3.0)), snoise(vec2(sp, 4.0)));
   vec2 g1 = secondaryGlaze(uv, c1, 0.34, sp + 11.0);
   vec2 g2 = secondaryGlaze(uv, c2, 0.27, sp + 23.0);
-  dens += g1.x + g2.x;
+  dens = max(dens + g1.x + g2.x, 0.0);   // scooped bloom cores can subtract -> clamp >= 0
 
-  // Granulation: fine paper tooth where pigment settles. Two-frequency for a bimodal,
-  // speckly grain; gated by dens so the flat light plateau stays clean (no global mottle).
+  // Granulation: fine paper tooth where pigment settles. Two-frequency, gated by dens so
+  // the flat plateau stays clean; a high-freq component acts SUBTRACTIVELY on coverage so
+  // real paper specks show THROUGH the wash (realtex's muted, granular sparkle).
   float grain = fbm(uv*62.0 + sp, 2) * fbm(uv*23.0 - sp, 2);
-  dens *= 1.0 + 0.18 * grain * smoothstep(0.06, 0.45, dens);
+  dens *= 1.0 + 0.15 * grain * smoothstep(0.06, 0.45, dens);
+  float grainHi = fbm(uv*110.0 + sp, 2) * 0.5 + 0.5;
 
-  // 4) pigment split: warm follows the LATE-DRYING pockets (the per-seed glaze pools)
-  // plus a gentle centre bias — so the warm bloom MOVES per seed, not a fixed bullseye.
-  float warmField = clamp(0.45 * smoothstep(uMixT0, uMixT1, sdfN) + 0.8 * (g1.y + g2.y), 0.0, 1.0);
-  float m = clamp(warmField + rimBand * 0.5, 0.0, 1.0);
+  // 4) pigment split: warm follows the late-drying glaze pools (moves per seed). Capped at
+  // 0.75 so pure pigment-B never fully displaces the green (avoids traffic-cone cores).
+  float warmField = clamp(0.4 * smoothstep(uMixT0, uMixT1, sdfN) + 0.85 * (g1.y + g2.y), 0.0, 1.0);
+  float m = clamp(warmField + rimBand * 0.4, 0.0, 0.75);
   vec3 K = mix(uKA, uKB, m) * dens;
   vec3 S = mix(uSA, uSB, m);
   vec3 R = kmReflectance(K, S);
   float cover = clamp(dens / uCoverKnee, 0.0, 1.0);
+  cover *= 1.0 - 0.28 * smoothstep(0.55, 0.85, grainHi);    // paper shows through
   vec3 col = mix(uPaperColor, R, cover);
   col += (ditherBlue(gl_FragCoord.xy) - 0.5) / 255.0;       // 5) dither
 
