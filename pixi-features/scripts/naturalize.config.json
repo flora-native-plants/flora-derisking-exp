@@ -1,0 +1,12 @@
+{
+  "background": "#f4f1ea",
+  "scale": 2,
+  "padding": 40,
+  "defaults": { "engine": "kinematic", "seed": 42, "width": 2, "cpSpacing": 40, "overshoot": 4, "cornerAngle": 35 },
+  "objects": {
+    "boundary": { "engine": "kinematic", "squiggle": 4, "color": "#2b2b28", "width": 2.5 },
+    "bed":      { "engine": "kinematic", "squiggle": 7, "color": "#4b7a4b", "width": 2 },
+    "walk":     { "engine": "rough", "roughness": 1.2, "bowing": 1, "doubleStroke": true, "color": "#8a6d3b", "width": 2 },
+    "leader":   { "engine": "rough", "roughness": 2.4, "bowing": 1.5, "doubleStroke": true, "color": "#3b6ea5", "width": 2 }
+  }
+}

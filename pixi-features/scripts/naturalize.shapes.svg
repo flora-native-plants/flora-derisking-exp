@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-280 -170 560 340">
+  <!-- Sample landscape-CAD shapes, world units. Each <path> has an id the knobs JSON targets. -->
+  <path id="boundary" d="M -260 -150 L 260 -150 L 260 150 L 40 150 L -60 90 L -260 90 Z"/>
+  <path id="bed" d="M -180 -40 C -140 -110, -40 -120, 30 -80 C 90 -48, 120 20, 70 70 C 20 118, -110 110, -170 60 C -210 26, -220 10, -180 -40 Z"/>
+  <path id="walk" d="M -240 20 L -80 20 L 40 -30 L 220 -30"/>
+  <path id="leader" d="M -200 120 L -160 60 L -120 120 L -80 60 L -40 120"/>
+</svg>
