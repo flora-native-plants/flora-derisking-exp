@@ -155,6 +155,11 @@ void main(){
   vec2 g2 = secondaryGlaze(uv, c2, 0.27, sp + 23.0);
   dens += g1.x + g2.x;
 
+  // Granulation: fine paper tooth where pigment settles. Two-frequency for a bimodal,
+  // speckly grain; gated by dens so the flat light plateau stays clean (no global mottle).
+  float grain = fbm(uv*62.0 + sp, 2) * fbm(uv*23.0 - sp, 2);
+  dens *= 1.0 + 0.18 * grain * smoothstep(0.06, 0.45, dens);
+
   // 4) pigment split: warm follows the LATE-DRYING pockets (the per-seed glaze pools)
   // plus a gentle centre bias — so the warm bloom MOVES per seed, not a fixed bullseye.
   float warmField = clamp(0.45 * smoothstep(uMixT0, uMixT1, sdfN) + 0.8 * (g1.y + g2.y), 0.0, 1.0);
