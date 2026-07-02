@@ -1,0 +1,2 @@
+{ "background": "#f4f1ea", "scale": 1.4, "padding": 24,
+  "defaults": { "engine": "kinematic", "squiggle": 5, "cpSpacing": 30, "overshoot": 3, "cornerAngle": 35, "width": 1.1, "color": "#2b2b28" } }

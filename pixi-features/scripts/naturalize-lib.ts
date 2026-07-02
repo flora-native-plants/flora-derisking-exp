@@ -1,7 +1,35 @@
 // naturalize-lib.ts — pure helpers shared by the naturalize renderer and its audit rig.
 // No top-level side effects: safe to import from any script.
+import svgpath from 'svgpath'
 import { roughOpsForPath } from '../src/lib/roughStroke'
 import { kinematicOpsForPath, type KinematicStrokeOptions } from '../src/lib/kinematicStroke'
+
+const TWO_THIRDS = 2 / 3
+
+/**
+ * Normalize any SVG path `d` to absolute M/L/C/Z only, so the harness can ingest real
+ * plant/landscape SVGs (relative commands, H/V, arcs, quadratics, shorthand) — not just the
+ * M/L/C/Z-absolute subset the generators' own flatten understands. The real app feeds
+ * structured segments, so this lives in the harness, not in kinematicStroke.
+ */
+export function normalizePath(d: string): string {
+  return svgpath(d)
+    .unshort() // S/T -> C/Q
+    .unarc()   // A -> C
+    .abs()     // relative -> absolute
+    .iterate((seg, _i, x, y) => {
+      const c = seg[0]
+      if (c === 'H') return [['L', seg[1], y]]
+      if (c === 'V') return [['L', x, seg[1]]]
+      if (c === 'Q') {
+        const qx = seg[1] as number, qy = seg[2] as number, ex = seg[3] as number, ey = seg[4] as number
+        return [['C', x + TWO_THIRDS * (qx - x), y + TWO_THIRDS * (qy - y),
+          ex + TWO_THIRDS * (qx - ex), ey + TWO_THIRDS * (qy - ey), ex, ey]]
+      }
+      return undefined // keep M/L/C/Z as-is
+    })
+    .toString()
+}
 
 export type Op = { op: string; data: number[] }
 export interface Knobs {
@@ -34,19 +62,20 @@ export function readShapes(svg: string): Array<{ id: string; d: string }> {
 
 /** Dispatch a shape `d` + knobs to the chosen naturalism generator -> op-list. */
 export function opsFor(d: string, k: Knobs): Op[] {
+  const nd = normalizePath(d) // accept real-world SVG paths, not just M/L/C/Z-absolute
   const seed = k.seed ?? 42
   if (k.engine === 'rough') {
-    const sets = roughOpsForPath(d, {
+    const sets = roughOpsForPath(nd, {
       roughness: k.roughness ?? 1, bowing: k.bowing ?? 1, seed, doubleStroke: k.doubleStroke ?? true,
     })
     return sets.flatMap((s) => s.ops as Op[])
   }
-  if (k.engine === 'crisp') return crispOps(d)
+  if (k.engine === 'crisp') return crispOps(nd)
   const ko: KinematicStrokeOptions = {
     squiggle: k.squiggle ?? 6, cpSpacing: k.cpSpacing ?? 40,
     overshoot: k.overshoot ?? 4, cornerAngle: k.cornerAngle ?? 35, seed,
   }
-  return kinematicOpsForPath(d, ko) as Op[]
+  return kinematicOpsForPath(nd, ko) as Op[]
 }
 
 /** The exact geometry as an op-list (faithful reference render). M/L/C/Z absolute only. */
