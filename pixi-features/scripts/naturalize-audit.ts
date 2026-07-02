@@ -73,6 +73,17 @@ const COLS: Array<{ label: string; k: Knobs }> = [
   { label: 'kin sq14', k: { engine: 'kinematic', squiggle: 14 } },
 ]
 
+// Named naturalism presets — the Excalidraw-style per-object "Sloppiness" ladder Geoff wants.
+// Crisp uses the exact-geometry engine (genuinely unchanged — closes the "squiggle=0 isn't
+// really crisp" finding); the rest are kinematic at increasing looseness. rough.js stays
+// selectable per object too; this ladder just proves a small, legible default set.
+const PRESETS: Array<{ label: string; k: Knobs }> = [
+  { label: 'Crisp', k: { engine: 'crisp' } },
+  { label: 'Architect', k: { engine: 'kinematic', squiggle: 3, cpSpacing: 40, overshoot: 2, cornerAngle: 35 } },
+  { label: 'Artist', k: { engine: 'kinematic', squiggle: 7, cpSpacing: 36, overshoot: 4, cornerAngle: 35 } },
+  { label: 'Cartoonist', k: { engine: 'kinematic', squiggle: 13, cpSpacing: 32, overshoot: 6, cornerAngle: 35 } },
+]
+
 const CELL_W = 200, CELL_H = 150, HEADER = 44, GUTTER = 78, FIT = 0.82
 
 // One cell: faint crisp underlay + naturalized stroke, fit into the cell box, plus a border.
@@ -131,8 +142,10 @@ function seedSheet(): string {
 // ---- render -----------------------------------------------------------------
 const sweepSvg = sheet(SHAPES, COLS, 'naturalize sweep — crisp underlay in gray; cell border catches clipping')
 const seedsSvg = seedSheet()
+const presetSvg = sheet(SHAPES, PRESETS, 'naturalism presets — per-object Sloppiness ladder (Crisp / Architect / Artist / Cartoonist)')
 writeFileSync(`${OUT}/audit-sweep.svg`, sweepSvg)
 writeFileSync(`${OUT}/audit-seeds.svg`, seedsSvg)
+writeFileSync(`${OUT}/audit-presets.svg`, presetSvg)
 
 const browser = await chromium.launch()
 async function shot(svg: string, name: string, scale = 2) {
@@ -147,5 +160,6 @@ async function shot(svg: string, name: string, scale = 2) {
 }
 await shot(sweepSvg, 'audit-sweep.png')
 await shot(seedsSvg, 'audit-seeds.png')
+await shot(presetSvg, 'audit-presets.png')
 await browser.close()
-console.log(`wrote ${OUT}/audit-sweep.png (${SHAPES.length}×${COLS.length}) + audit-seeds.png`)
+console.log(`wrote ${OUT}/audit-sweep.png (${SHAPES.length}×${COLS.length}) + audit-seeds.png + audit-presets.png`)
