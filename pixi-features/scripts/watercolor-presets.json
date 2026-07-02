@@ -1,13 +1,9 @@
 {
   "plantId": 2,
-  "variants": 9,
+  "variants": 1,
   "presets": [
-    { "name": "baseline",      "offsetBase": 8, "fbmB": 0.35, "paperC": 0.06, "bandCount": 6, "edgeWidth": 1.0, "bandGain": 0.7, "baseDensity": 0.4, "coverKnee": 0.35, "mixT0": 0.2, "mixT1": 0.85 },
-    { "name": "strong-bands",  "offsetBase": 8, "fbmB": 0.35, "paperC": 0.06, "bandCount": 6, "edgeWidth": 1.0, "bandGain": 1.3, "baseDensity": 0.35, "coverKnee": 0.35, "mixT0": 0.2, "mixT1": 0.85 },
-    { "name": "narrow-bands",  "offsetBase": 8, "fbmB": 0.35, "paperC": 0.06, "bandCount": 7, "edgeWidth": 0.6, "bandGain": 1.3, "baseDensity": 0.35, "coverKnee": 0.35, "mixT0": 0.2, "mixT1": 0.85 },
-    { "name": "green-body",    "offsetBase": 8, "fbmB": 0.35, "paperC": 0.06, "bandCount": 6, "edgeWidth": 0.9, "bandGain": 1.3, "baseDensity": 0.35, "coverKnee": 0.4, "mixT0": 0.55, "mixT1": 1.05 },
-    { "name": "high-contrast", "offsetBase": 8, "fbmB": 0.3,  "paperC": 0.05, "bandCount": 6, "edgeWidth": 0.8, "bandGain": 1.5, "baseDensity": 0.25, "coverKnee": 0.5, "mixT0": 0.5, "mixT1": 1.0 },
-    { "name": "organic",       "offsetBase": 6, "fbmB": 0.5,  "paperC": 0.1,  "bandCount": 6, "edgeWidth": 0.9, "bandGain": 1.2, "baseDensity": 0.35, "coverKnee": 0.4, "mixT0": 0.5, "mixT1": 1.05, "warpAmp": 0.05 },
-    { "name": "isolate-bands", "variants": 1, "offsetBase": 8, "fbmB": 0.25, "paperC": 0.04, "bandCount": 6, "edgeWidth": 1.0, "bandGain": 1.3, "baseDensity": 0.4, "coverKnee": 0.6, "mixT0": 1.1, "mixT1": 1.2, "shadowAmp": 0.0, "warpAmp": 0.03 }
+    { "name": "flat-calm",      "warpAmp": 0.15, "fbmB": 0.12, "paperC": 0.03, "bandCount": 4, "edgeWidth": 1.1, "bandGain": 0.7, "baseDensity": 0.42, "coverKnee": 0.55, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 },
+    { "name": "flat-loose",     "warpAmp": 0.20, "fbmB": 0.15, "paperC": 0.03, "bandCount": 3, "edgeWidth": 1.2, "bandGain": 0.7, "baseDensity": 0.42, "coverKnee": 0.55, "plateauLo": 0.2, "plateauHi": 0.62, "mixT0": 0.5, "mixT1": 1.0 },
+    { "name": "flat-5band",     "warpAmp": 0.13, "fbmB": 0.10, "paperC": 0.025, "bandCount": 5, "edgeWidth": 0.9, "bandGain": 0.65, "baseDensity": 0.42, "coverKnee": 0.55, "plateauLo": 0.22, "plateauHi": 0.6, "mixT0": 0.55, "mixT1": 1.05 }
   ]
 }

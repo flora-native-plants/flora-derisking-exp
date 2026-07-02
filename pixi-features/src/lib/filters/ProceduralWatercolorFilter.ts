@@ -54,7 +54,9 @@ float seedPhase(){ return fract(sin(uSeed * 12.9898) * 43758.5453) * 100.0; }
 // A tiny warp per seed makes the field organic. Returns sdfN; exposes rimField + inside.
 float sampleField(vec2 uv, out float inside, out float rimField){
   float sp = seedPhase();
-  vec2 wuv = uv + uWarpAmp * vec2(fbm(uv*4.0 + sp, 3), fbm(uv*4.0 - sp, 3));
+  // LOW-frequency, larger warp so the radial iso-bands get pushed off-centre and
+  // wander organically (a tiny high-freq warp left them concentric on the leaf centre).
+  vec2 wuv = uv + uWarpAmp * vec2(fbm(uv*1.6 + sp, 3), fbm(uv*1.6 - sp + 4.3, 3));
   vec4 s = texture(uTexture, clamp(wuv, 0.001, 0.999));
   rimField = s.g;                 // 0 at silhouette edge -> 1 by ~10px inside
   inside = step(0.004, s.r);      // sdfN > ~1/255 => inside the silhouette
@@ -116,8 +118,9 @@ void main(){
   float T = dryingField(uv, sdfN);
   float sp = seedPhase();
 
-  // 1) base wash with LOW-FREQ spatial variation, so the plateau does real work
-  float base = uBaseDensity * (0.7 + 0.6 * (fbm(uv*3.0 + sp, 3) * 0.5 + 0.5));
+  // 1) base wash — FLAT (only a whisper of low-freq variation) so most of the leaf is a
+  // calm plateau and the tide-lines carry the tonal energy (Fable: "nothing is flat" tell).
+  float base = uBaseDensity * (0.92 + 0.16 * (fbm(uv*2.2 + sp, 3) * 0.5 + 0.5));
   // 2) plateau BEFORE bands (density field only, never T)
   float densP = plateau(base, uPlateauLo, uPlateauHi);
   // 3) + bands (additive in density)
@@ -128,8 +131,9 @@ void main(){
   float rimBand = (1.0 - rimField) * (0.5 + 0.5 * snoise(uv*20.0 + sp));
   dens += 0.4 * rimBand;
 
-  // 4) pigment split by T + warm rim enrichment. Concentration scales K only.
-  float m = clamp(smoothstep(uMixT0, uMixT1, T) + rimBand * 0.5, 0.0, 1.0);
+  // 4) pigment split by the SMOOTH drying field (sdfN, not noisy T) so hue is calm —
+  // warm where it dried last (centre), green at the edges — no fine hue mottle.
+  float m = clamp(smoothstep(uMixT0, uMixT1, sdfN) + rimBand * 0.5, 0.0, 1.0);
   vec3 K = mix(uKA, uKB, m) * dens;
   vec3 S = mix(uSA, uSB, m);
   vec3 R = kmReflectance(K, S);
