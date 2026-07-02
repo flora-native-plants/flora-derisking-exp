@@ -68,7 +68,7 @@ const grainOn       = ref(true)
 const grainStrength = ref(0.3)
 const contourOn     = ref(true)
 const contourWidth  = ref(2.5)
-const contourWobble = ref(2.5)
+const contourWobble = ref(1.5)
 const contourAlpha  = ref(0.9)
 
 // ── procedural watercolor controls (Task 7) ──────────────────────────────────
@@ -83,7 +83,7 @@ const pwPlateauLo     = ref(0.2)    // plateau low threshold
 const pwPlateauHi     = ref(0.62)   // plateau high threshold
 const pwMixT0         = ref(0.5)    // pigment A→B mix start
 const pwMixT1         = ref(1.0)    // pigment A→B mix end
-const pwBaseDensity   = ref(0.48)   // base wash density
+const pwBaseDensity   = ref(0.58)   // base wash density
 const pwCoverKnee     = ref(0.85)   // coverage opacity knee
 const pwShadowDX      = ref(0.6)    // shadow direction X (normalized in JS) [-1, 1]
 const pwShadowDY      = ref(-0.4)   // shadow direction Y (normalized in JS) [-1, 1]

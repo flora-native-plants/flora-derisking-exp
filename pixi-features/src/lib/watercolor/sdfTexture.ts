@@ -25,7 +25,9 @@ export function sdfToTexture(sdf: Float32Array, size: number, maxDepth: number):
     img.data[o] = Math.round(sdfN * 255)
     img.data[o + 1] = Math.round(rim * 255)
     img.data[o + 2] = 0
-    img.data[o + 3] = 255
+    // A = exact silhouette coverage (inside = d>0), so the fill reaches thin lobes where
+    // sdfN rounds to ~0 — else the fill recedes and the contour floats outside it.
+    img.data[o + 3] = d > 0 ? 255 : 0
   }
   ctx.putImageData(img, 0, 0)
   const tex = Texture.from(canvas)

@@ -55,7 +55,7 @@ float sampleField(vec2 uv, out float inside, out float rimField){
   float sp = seedPhase();
   vec4 s0 = texture(uTexture, uv);
   rimField = s0.g;
-  inside = step(0.004, s0.r);
+  inside = step(0.5, s0.a);            // A = exact silhouette coverage (reaches thin lobes)
   float edgeDamp = smoothstep(0.02, 0.30, s0.r);
   vec2 wuv = uv + uWarpAmp * edgeDamp * vec2(fbm(uv*1.6 + sp, 3), fbm(uv*1.6 - sp + 4.3, 3));
   return texture(uTexture, clamp(wuv, 0.001, 0.999)).r;   // warped sdfN for the drying field
@@ -74,6 +74,7 @@ float hash1(float x){ return fract(sin(x*12.9898) * 43758.5453); }
 float bandTerm(vec2 uv, float T, float w, int n, float sp){
   float acc = 0.0;
   float soft = fbm(uv*2.0 + sp + 31.0, 3) * 0.5 + 0.5;   // 0..1: high = feathered, low = crisp
+  float ang = atan(uv.y - 0.5, uv.x - 0.5);              // cheap along-contour parameter
   for(int k=0;k<7;k++){
     float inRange = (k < n) ? 1.0 : 0.0;
     float fk = float(k);
@@ -82,7 +83,9 @@ float bandTerm(vec2 uv, float T, float w, int n, float sp){
     float gainK = mix(1.0, 0.4, soft) * (0.55 + 0.9*hash1(fk*7.7 + sp));          // (c)+(d)
     float d = (Tk - bandThreshold(k, max(n,1)))/wTk;
     float spike = (d < 0.0) ? smoothstep(-1.0, 0.0, d) : exp(-d*d*0.6);           // asym line
-    float occ = smoothstep(0.32, 0.62, fbm(uv*3.0 + fk*9.1 + sp, 3) * 0.5 + 0.5); // (b)
+    // (b) ANISOTROPIC occupancy in the band's own frame: low-freq along the contour (ang),
+    // tight across it (Tk) -> masked-in regions are elongated arcs that taper, not round blobs.
+    float occ = smoothstep(0.30, 0.60, fbm(vec2(ang*1.6 + fk*9.1, Tk*9.0) + sp, 3) * 0.5 + 0.5);
     acc = max(acc, spike * occ * gainK * inRange);
   }
   return acc;
@@ -113,11 +116,15 @@ vec2 secondaryGlaze(vec2 uv, vec2 c, float r, float seedOff){
   float ang = atan(rel.y, rel.x);
   vec2 flowDir = normalize(c - vec2(0.5) + 1e-5);
   float dirBias = 0.5 + 0.5 * dot(normalize(rel + 1e-5), flowDir);
-  float rimOcc = smoothstep(0.25, 0.72, fbm(vec2(cos(ang), sin(ang))*1.5 + seedOff, 3) * 0.5 + 0.5)
-               * (0.3 + 0.7 * dirBias);
+  float occNoise = smoothstep(0.25, 0.72, fbm(vec2(cos(ang), sin(ang))*1.5 + seedOff, 3) * 0.5 + 0.5);
+  // Guarantee a minimum dried arc on the drier side so the pool always has a front somewhere
+  // (an all-occluded rim reads as fading, not pooling).
+  float rimOcc = max(occNoise * (0.3 + 0.7 * dirBias), 0.55 * smoothstep(0.55, 0.9, dirBias));
   float rimStr = rim * rimOcc;
   float dContrib = rimStr * (0.22 + bandsG * uBandGain) - core * 0.16;
-  float warm = rimStr + 0.25 * core;                          // neutral (green) where rim absent
+  // Warmth in the CORE (not the often-occluded rim): the scooped low-density core then renders
+  // as pale warm brown — the realtex bloom — instead of bleached green.
+  float warm = 0.5 * rimStr + 0.55 * core;
   return vec2(dContrib, warm);
 }
 
@@ -132,9 +139,12 @@ void main(){
   float base = uBaseDensity * (0.92 + 0.16 * (fbm(uv*2.2 + sp, 3) * 0.5 + 0.5));
   // 2) plateau BEFORE bands (density field only, never T)
   float densP = plateau(base, uPlateauLo, uPlateauHi);
-  // 3) + primary tide-lines
-  float bands = bandTerm(uv, T, uEdgeWidth, int(uBandCount), sp);
-  float dens = densP + bands * uBandGain;
+  // 3) + primary tide-lines, gated by a per-instance QUIET mask (~1 cycle/crown) so ~40-50%
+  // of each leaf is nearly band-free and the dark accents CLUSTER in a zone (realtex is silent
+  // over whole quadrants). Where that zone sits is also the biggest per-seed variety lever.
+  float activity = smoothstep(0.35, 0.75, fbm(uv*1.2 + sp + 71.0, 2) * 0.5 + 0.5);
+  float bands = min(bandTerm(uv, T, uEdgeWidth, int(uBandCount), sp), 0.85);  // cap near-black
+  float dens = densP + bands * uBandGain * activity;
 
   // weak WARM tidied mask rim (halved + occupancy dropouts -> not a triple outline)
   float rimBand = (1.0 - rimField) * smoothstep(0.35, 0.7, snoise(uv*14.0 + sp) * 0.5 + 0.5);
@@ -159,7 +169,9 @@ void main(){
 
   // 4) pigment split: warm follows the late-drying glaze pools (moves per seed), capped at 0.75
   float warmField = clamp(0.4 * smoothstep(uMixT0, uMixT1, sdfN) + 0.85 * (g1.y + g2.y), 0.0, 1.0);
-  float m = clamp(warmField + rimBand * 0.4, 0.0, 0.75);
+  // whisper of low-freq green-temperature drift (bluer<->yellower green), so the field isn't one flat green
+  float tempWobble = 0.06 * fbm(uv*1.5 + sp + 91.0, 1);
+  float m = clamp(warmField + rimBand * 0.4 + tempWobble, 0.0, 0.75);
   vec3 K = mix(uKA, uKB, m) * dens;                 // concentration scales K only
   vec3 S = mix(uSA, uSB, m);
   vec3 R = kmReflectance(K, S);
