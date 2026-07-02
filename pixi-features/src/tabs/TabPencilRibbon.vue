@@ -100,6 +100,9 @@ onMounted(async () => {
   // Background relief tile (broad) for the paper filter; deposition grain tile (fine) for strokes.
   const paperTex = await Assets.load('/textures/paper/watercolor-height.png')
   const grainTex = await Assets.load('/textures/paper/graphite-grain.png')
+  // Both tiles MUST repeat — the filter/shader sample them world-anchored across many tiles.
+  // (Missing repeat on the paper tile → clamp seam = a banding crosshair + patch at world origin.)
+  paperTex.source.style.addressMode = 'repeat'; paperTex.source.style.update()
   grainTex.source.style.addressMode = 'repeat'; grainTex.source.style.update()
   grainSource = markRaw(grainTex.source)
   paperFilter.setPaperTexture(paperTex.source)
