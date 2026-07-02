@@ -37,6 +37,11 @@ type Pt = [number, number]
 const BEZIER_FLATTEN_STEPS = 16
 // Catmull-Rom → cubic-bezier tangent scale (the standard 1/6 factor).
 const CR_TANGENT = 1 / 6
+// Lateral wobble varies over roughly this distance (world units): a multiple of the
+// control-point spacing, floored, so the hand-wobble frequency is stable regardless of
+// how densely the path is sampled.
+const WOBBLE_WAVELENGTH_MULT = 1.6
+const WOBBLE_WAVELENGTH_MIN = 28
 // Points within this distance (world units) of the subpath start count as the
 // closing vertex and are dropped, so a closed path never keeps a coincident seam CP.
 const SEAM_EPS = 1e-6
@@ -123,13 +128,34 @@ function resample(pts: Pt[], spacing: number): Pt[] {
 }
 
 /**
- * Perturb control points laterally. Endpoints of open paths are pinned (the
- * min-jerk anchors); interior points get max deviation (bell weight), matching
- * AlMeraj's observation that hand-drawn lines deviate most in the middle.
+ * Perturb control points laterally by a COHERENT function of arc length rather than a
+ * per-vertex random offset. Deviation is smooth 1-D value noise sampled at each point's
+ * distance along the run, so the wobble has a controlled spatial frequency (`wavelength`,
+ * world units) INDEPENDENT of vertex density — dense input no longer becomes high-frequency
+ * noise. Endpoints of open runs are pinned (min-jerk anchors, bell weight); a closed loop
+ * wraps its noise so there is no seam. AlMeraj's observation (lines deviate most in the
+ * middle) is preserved by the bell edge weight.
  */
-function perturb(cps: Pt[], amp: number, rng: () => number, closed: boolean): Pt[] {
+function perturb(cps: Pt[], amp: number, rng: () => number, closed: boolean, wavelength: number): Pt[] {
   const n = cps.length
-  if (n <= 1) return cps.slice() // avoid NaN from Math.sin(PI * i/(n-1)) when n===1
+  if (n <= 1 || amp === 0) return cps.slice()
+  // cumulative arc length along the run
+  const s: number[] = new Array(n)
+  s[0] = 0
+  for (let i = 1; i < n; i++) s[i] = s[i - 1] + Math.hypot(cps[i][0] - cps[i - 1][0], cps[i][1] - cps[i - 1][1])
+  const span = closed ? s[n - 1] + Math.hypot(cps[0][0] - cps[n - 1][0], cps[0][1] - cps[n - 1][1]) : s[n - 1]
+  if (span < 1e-9) return cps.slice()
+  // coherent 1-D value noise: K smoothly-interpolated random lattice values over the span
+  const K = Math.max(2, Math.round(span / wavelength))
+  const vals: number[] = new Array(K + 1)
+  for (let k = 0; k <= K; k++) vals[k] = rng() * 2 - 1
+  if (closed) vals[K] = vals[0] // wrap so a smooth loop has no seam
+  const noise = (sNorm: number): number => {
+    const p = Math.max(0, Math.min(K - 1e-9, sNorm * K))
+    const i = Math.floor(p), f = p - i
+    const u = f * f * (3 - 2 * f) // smoothstep
+    return vals[i] * (1 - u) + vals[i + 1] * u
+  }
   return cps.map((p, i) => {
     const edge = closed ? 1 : Math.sin(Math.PI * (i / (n - 1))) // 0 at ends, 1 mid
     const a = cps[Math.max(0, i - 1)], b = cps[Math.min(n - 1, i + 1)]
@@ -137,7 +163,7 @@ function perturb(cps: Pt[], amp: number, rng: () => number, closed: boolean): Pt
     const tl = Math.hypot(tx, ty) || 1
     tx /= tl; ty /= tl
     const nx = -ty, ny = tx // unit normal
-    const dev = (rng() * 2 - 1) * amp * edge
+    const dev = noise(s[i] / span) * amp * edge
     return [p[0] + nx * dev, p[1] + ny * dev] as Pt
   })
 }
@@ -278,6 +304,7 @@ export function kinematicOpsForPath(d: string, o: KinematicStrokeOptions): Strok
   const subpaths = flattenPath(d)
   const ops: StrokeOp[] = []
   const cornerRad = (o.cornerAngle * Math.PI) / 180
+  const wobbleWavelength = Math.max(o.cpSpacing * WOBBLE_WAVELENGTH_MULT, WOBBLE_WAVELENGTH_MIN)
   for (let si = 0; si < subpaths.length; si++) {
     const raw = subpaths[si]
     const isClosedSub =
@@ -291,7 +318,7 @@ export function kinematicOpsForPath(d: string, o: KinematicStrokeOptions): Strok
       let cps = resample(run, o.cpSpacing)
       const straight = isStraightRun(run)
       const amp = straight ? o.squiggle * STRAIGHT_SQUIGGLE_SCALE : o.squiggle
-      cps = perturb(cps, amp, rng, loop)
+      cps = perturb(cps, amp, rng, loop, wobbleWavelength)
       if (straight) {
         const L = Math.hypot(run[run.length - 1][0] - run[0][0], run[run.length - 1][1] - run[0][1])
         const bowSign = rng() < 0.5 ? -1 : 1
