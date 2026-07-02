@@ -112,13 +112,17 @@ float plateau(float d, float lo, float hi){
 // A secondary FREE-FLOATING glaze puddle centred at c (radius r): its own drying field
 // -> bands, wetness-gated. Its density ADDS to the primary (overlap darkening — Fable's
 // strongest cue) and its bands cross the primary's (a single field's bands never cross).
-float secondaryGlaze(vec2 uv, vec2 c, float r, float seedOff){
+// Returns (density contribution, wetness) — wetness marks a LATE-DRYING pocket that
+// pulls the hue warm, so the warm bloom follows the (per-seed) glaze positions instead
+// of always sitting at the leaf centre.
+vec2 secondaryGlaze(vec2 uv, vec2 c, float r, float seedOff){
   float warp = uWarpAmp * fbm(uv*1.6 + seedOff, 3);
-  float wet = 1.0 - smoothstep(r * 0.35, r, length(uv - c) + warp * r); // 1 near centre -> 0 at r
-  if(wet <= 0.001) return 0.0;
+  float wet = 1.0 - smoothstep(0.0, r, length(uv - c) + warp * r); // soft: 1 at centre -> 0 at r
+  if(wet <= 0.001) return vec2(0.0);
   float Tg = wet + uFbmB * fbm(uv*6.0 + seedOff + 3.7, 4);
   float bandsG = bandTerm(Tg, uEdgeWidth, int(uBandCount));
-  return wet * (uBaseDensity * 0.45 + bandsG * uBandGain);
+  float f = wet * wet;  // fades smoothly to 0 at the blob edge (no hard ring)
+  return vec2(f * (uBaseDensity * 0.45 + bandsG * uBandGain), f);
 }
 
 void main(){
@@ -145,14 +149,16 @@ void main(){
 
   // 3b) LAYERED GLAZES — two free-floating secondary puddles (seeded positions). Their
   // density adds (overlap darkening) and their bands cross the primary's -> paint process.
-  vec2 c1 = vec2(0.60, 0.44) + 0.12 * vec2(snoise(vec2(sp, 1.0)), snoise(vec2(sp, 2.0)));
-  vec2 c2 = vec2(0.42, 0.60) + 0.12 * vec2(snoise(vec2(sp, 3.0)), snoise(vec2(sp, 4.0)));
-  dens += secondaryGlaze(uv, c1, 0.34, sp + 11.0);
-  dens += secondaryGlaze(uv, c2, 0.27, sp + 23.0);
+  vec2 c1 = vec2(0.60, 0.44) + 0.18 * vec2(snoise(vec2(sp, 1.0)), snoise(vec2(sp, 2.0)));
+  vec2 c2 = vec2(0.42, 0.60) + 0.18 * vec2(snoise(vec2(sp, 3.0)), snoise(vec2(sp, 4.0)));
+  vec2 g1 = secondaryGlaze(uv, c1, 0.34, sp + 11.0);
+  vec2 g2 = secondaryGlaze(uv, c2, 0.27, sp + 23.0);
+  dens += g1.x + g2.x;
 
-  // 4) pigment split by the SMOOTH drying field (sdfN, not noisy T) so hue is calm —
-  // warm where it dried last (centre), green at the edges — no fine hue mottle.
-  float m = clamp(smoothstep(uMixT0, uMixT1, sdfN) + rimBand * 0.5, 0.0, 1.0);
+  // 4) pigment split: warm follows the LATE-DRYING pockets (the per-seed glaze pools)
+  // plus a gentle centre bias — so the warm bloom MOVES per seed, not a fixed bullseye.
+  float warmField = clamp(0.45 * smoothstep(uMixT0, uMixT1, sdfN) + 0.8 * (g1.y + g2.y), 0.0, 1.0);
+  float m = clamp(warmField + rimBand * 0.5, 0.0, 1.0);
   vec3 K = mix(uKA, uKB, m) * dens;
   vec3 S = mix(uSA, uSB, m);
   vec3 R = kmReflectance(K, S);
