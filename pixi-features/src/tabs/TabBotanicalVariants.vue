@@ -261,10 +261,24 @@ function buildGrainLayer(): Container {
 function buildContour(seed: number): Graphics {
   const g = markRaw(new Graphics())
   const phase = (seed * 1.618) % (Math.PI * 2)
+  const r = rngFor(seed * 97 + 13)
+  // Seeded low-freq "pressure" along the path -> pencil-pressure width/alpha variation
+  // + occasional lifts (gaps). Breaks the uniform "worm" contour tell (Fable).
+  const a1 = r() * 6.283, a2 = r() * 6.283
   for (const poly of silhouettePolys) {
     if (poly.length < 3) continue
     const pts = wobblePoly(scalePoly(poly), contourWobble.value, phase)
-    g.poly(pts, true).stroke({ color: CONTOUR_COLOR, width: contourWidth.value, alpha: contourAlpha.value, join: 'round', cap: 'round' })
+    for (let i = 0; i < pts.length; i++) {
+      const p0 = pts[i], p1 = pts[(i + 1) % pts.length]
+      const t = i / pts.length
+      const pressure = Math.max(0, Math.min(1,
+        0.55 + 0.35 * Math.sin(t * 6.283 * 3 + a1) + 0.2 * Math.sin(t * 6.283 * 8 + a2)))
+      if (pressure < 0.14) continue // lift the pencil — a gap
+      const width = contourWidth.value * (0.3 + 1.0 * pressure)
+      const alpha = contourAlpha.value * (0.35 + 0.65 * pressure)
+      g.moveTo(p0.x, p0.y).lineTo(p1.x, p1.y)
+        .stroke({ color: CONTOUR_COLOR, width, alpha, join: 'round', cap: 'round' })
+    }
   }
   return g
 }
