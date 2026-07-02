@@ -160,10 +160,10 @@ void main(){
 
   // 3b) LAYERED GLAZES — two free-floating secondary puddles (seeded positions). Their
   // density adds (overlap darkening) and their bands cross the primary's -> paint process.
-  vec2 c1 = vec2(0.60, 0.44) + 0.18 * vec2(snoise(vec2(sp, 1.0)), snoise(vec2(sp, 2.0)));
-  vec2 c2 = vec2(0.42, 0.60) + 0.18 * vec2(snoise(vec2(sp, 3.0)), snoise(vec2(sp, 4.0)));
-  vec2 g1 = secondaryGlaze(uv, c1, 0.34, sp + 11.0);
-  vec2 g2 = secondaryGlaze(uv, c2, 0.27, sp + 23.0);
+  vec2 c1 = vec2(0.58, 0.42) + 0.24 * vec2(snoise(vec2(sp, 1.0)), snoise(vec2(sp, 2.0)));
+  vec2 c2 = vec2(0.40, 0.62) + 0.24 * vec2(snoise(vec2(sp, 3.0)), snoise(vec2(sp, 4.0)));
+  vec2 g1 = secondaryGlaze(uv, c1, 0.20, sp + 11.0);   // smaller, localised bloom accidents
+  vec2 g2 = secondaryGlaze(uv, c2, 0.15, sp + 23.0);
   dens = max(dens + g1.x + g2.x, 0.0);   // scooped bloom cores can subtract -> clamp >= 0
 
   // Granulation: fine paper tooth where pigment settles. Two-frequency, gated by dens so
