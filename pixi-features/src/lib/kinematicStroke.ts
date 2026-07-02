@@ -42,6 +42,10 @@ const CR_TANGENT = 1 / 6
 // how densely the path is sampled.
 const WOBBLE_WAVELENGTH_MULT = 1.6
 const WOBBLE_WAVELENGTH_MIN = 28
+// Corner overshoot is capped to this fraction of the run's length, so a fixed world-unit
+// overshoot never dominates tiny features (e.g. plant symbols) while staying full-size on
+// long linework (property lines). Scale-coupling fix surfaced by real landscape geometry.
+const OVERSHOOT_MAX_FRAC = 0.1
 // Points within this distance (world units) of the subpath start count as the
 // closing vertex and are dropped, so a closed path never keeps a coincident seam CP.
 const SEAM_EPS = 1e-6
@@ -324,7 +328,12 @@ export function kinematicOpsForPath(d: string, o: KinematicStrokeOptions): Strok
         const bowSign = rng() < 0.5 ? -1 : 1
         cps = bowRun(cps, bowSign * Math.min(L / BOW_DIVISOR, BOW_CAP))
       }
-      if (!loop && o.overshoot > 0 && cps.length >= 2) cps = applyOvershoot(cps, o.overshoot)
+      if (!loop && o.overshoot > 0 && cps.length >= 2) {
+        let runLen = 0
+        for (let j = 1; j < cps.length; j++) runLen += Math.hypot(cps[j][0] - cps[j - 1][0], cps[j][1] - cps[j - 1][1])
+        const eff = Math.min(o.overshoot, runLen * OVERSHOOT_MAX_FRAC)
+        if (eff > 1e-6) cps = applyOvershoot(cps, eff)
+      }
       catmullRomOps(cps, ops, loop)
     }
   }
