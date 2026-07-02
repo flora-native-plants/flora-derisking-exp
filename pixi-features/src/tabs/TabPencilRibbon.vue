@@ -23,6 +23,7 @@ const opts = reactive({
   squiggle: 6, cpSpacing: 40, overshoot: 4, cornerAngle: 35, seed: 42,
   taperPx: STROKE_RIBBON_DEFAULTS.taperPx,
   grainFine: STROKE_RIBBON_DEFAULTS.grainFine,
+  widthVar: STROKE_RIBBON_DEFAULTS.widthVar,
   toneAmp: STROKE_RIBBON_DEFAULTS.toneAmp,
   tooth: STROKE_RIBBON_DEFAULTS.tooth,
   edgeSoft: STROKE_RIBBON_DEFAULTS.edgeSoft,
@@ -54,7 +55,7 @@ function rebuild(): void {
     const built = buildStrokeMeshes(ops, grainSource, {
       ...STROKE_RIBBON_DEFAULTS, color: rgb(s.color), seed: opts.seed,
       strokePx: opts.strokeWidth / 2, taperPx: opts.taperPx, grainFine: opts.grainFine,
-      toneAmp: opts.toneAmp, tooth: opts.tooth, edgeSoft: opts.edgeSoft,
+      widthVar: opts.widthVar, toneAmp: opts.toneAmp, tooth: opts.tooth, edgeSoft: opts.edgeSoft,
     })
     for (const m of built) { world.addChild(m); meshes.push(m) }
   }
@@ -68,6 +69,7 @@ function setLiveUniforms(): void {
     u.uZoom = zoom
     u.uStrokePx = opts.strokeWidth / 2
     u.uTaperPx = opts.taperPx
+    u.uWidthVar = opts.widthVar
     u.uGrainFine = opts.grainFine
     u.uToneAmp = opts.toneAmp
     u.uTooth = opts.tooth
@@ -120,7 +122,7 @@ onUnmounted(() => {
 
 // Geometry-changing params rebuild; width/material params are live uniform updates (no rebuild).
 watch(() => [opts.squiggle, opts.cpSpacing, opts.overshoot, opts.cornerAngle, opts.seed], () => rebuild())
-watch(() => [opts.strokeWidth, opts.taperPx, opts.grainFine, opts.toneAmp, opts.tooth, opts.edgeSoft], () => setLiveUniforms())
+watch(() => [opts.strokeWidth, opts.taperPx, opts.grainFine, opts.widthVar, opts.toneAmp, opts.tooth, opts.edgeSoft], () => setLiveUniforms())
 watch(() => opts.paper, () => applyPaper())
 
 function applyPaper(): void {
@@ -161,6 +163,7 @@ function reseed() { opts.seed = Math.floor(Math.random() * 100000) + 1 }
       <label>Squiggle <b>{{ opts.squiggle.toFixed(1) }}</b><input type="range" min="0" max="20" step="0.5" v-model.number="opts.squiggle" /></label>
       <label>Taper px <b>{{ opts.taperPx.toFixed(0) }}</b><input type="range" min="0" max="60" step="1" v-model.number="opts.taperPx" /></label>
       <label>Grain scale <b>{{ opts.grainFine.toFixed(0) }}</b><input type="range" min="40" max="800" step="10" v-model.number="opts.grainFine" /></label>
+      <label>Width var <b>{{ opts.widthVar.toFixed(2) }}</b><input type="range" min="0" max="0.8" step="0.05" v-model.number="opts.widthVar" /></label>
       <label>Tone amp <b>{{ opts.toneAmp.toFixed(2) }}</b><input type="range" min="0" max="0.9" step="0.05" v-model.number="opts.toneAmp" /></label>
       <label>Tooth <b>{{ opts.tooth.toFixed(2) }}</b><input type="range" min="0" max="1" step="0.05" v-model.number="opts.tooth" /></label>
       <label>Edge softness <b>{{ opts.edgeSoft.toFixed(2) }}</b><input type="range" min="0" max="0.95" step="0.05" v-model.number="opts.edgeSoft" /></label>

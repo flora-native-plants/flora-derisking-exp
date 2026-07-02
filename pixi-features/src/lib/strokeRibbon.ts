@@ -132,13 +132,16 @@ uniform float uZoom;       // world.scale
 uniform float uStrokePx;   // half-width in screen px
 uniform float uRunLen;     // world arc length of this run
 uniform float uTaperPx;    // tip taper length, screen px
+uniform float uWidthVar;   // 0..1 pressure->width swing (Fable: ~0.3, NOT 0..1 -> sub-pixel dropout)
 void main() {
   float side = aUV.y * 2.0 - 1.0;                 // -1..1 across the ribbon
   float s = aUV.x;
   float d = min(s, uRunLen - s);                  // world arc-dist to nearest end
   float taperLen = max(uTaperPx / uZoom, 1e-4);   // screen px -> world
   float tip = smoothstep(0.0, 1.0, clamp(d / taperLen, 0.0, 1.0));
-  float halfW = (uStrokePx / uZoom) * aPressure * tip;
+  // Bounded width band: floor at (1 - uWidthVar) so a thin base stroke never goes sub-pixel.
+  float widthPressure = mix(1.0 - uWidthVar, 1.0, aPressure);
+  float halfW = (uStrokePx / uZoom) * widthPressure * tip;
   vec2 pos = aPosition + aNormal * side * halfW;
   mat3 mvp = uProjectionMatrix * uWorldTransformMatrix * uTransformMatrix;
   gl_Position = vec4((mvp * vec3(pos, 1.0)).xy, 0.0, 1.0);
@@ -218,6 +221,7 @@ export interface StrokeRibbonParams {
   strokePx: number   // half-width in screen px
   taperPx: number    // tip taper length, screen px
   grainFine: number  // world-units divisor for the deposition grain
+  widthVar: number   // 0..1 pressure->width swing (keep ~0.3; 1.0 drops thin strokes to sub-pixel)
   toneAmp: number
   tooth: number
   edgeSoft: number
@@ -229,6 +233,7 @@ export const STROKE_RIBBON_DEFAULTS: StrokeRibbonParams = {
   strokePx: 1.25,            // half of a 2.5px stroke
   taperPx: 14,
   grainFine: 300,
+  widthVar: 0.35,            // ±~35% width band — never sub-pixel at 2.5px base
   toneAmp: 0.55,
   tooth: 0.85,
   edgeSoft: 0.5,
@@ -256,6 +261,7 @@ export function buildStrokeMeshes(
       uStrokePx:  { value: p.strokePx, type: 'f32' },
       uRunLen:    { value: g.runLen, type: 'f32' },
       uTaperPx:   { value: p.taperPx, type: 'f32' },
+      uWidthVar:  { value: p.widthVar, type: 'f32' },
       uGrainFine: { value: p.grainFine, type: 'f32' },
       uInk:       { value: new Float32Array(p.color), type: 'vec3<f32>' },
       uToneAmp:   { value: p.toneAmp, type: 'f32' },
