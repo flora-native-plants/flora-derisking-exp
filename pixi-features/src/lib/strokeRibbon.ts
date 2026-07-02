@@ -63,8 +63,12 @@ function vnoise1(x: number): number {
   return hash11(i) * (1 - u) + hash11(i + 1) * u
 }
 function pressureAt(s: number, seed: number): number {
-  const p = 0.6 * vnoise1(s * 0.02 + seed) + 0.4 * vnoise1(s * 0.13 + seed * 1.7)
-  return Math.max(0, Math.min(1, p))
+  // Graphite pressure: mostly FIRM with occasional irregular lightening — NOT a clean sine. A single
+  // low-frequency octave reads as a periodic swell; three octaves + a firm bias breaks that up.
+  const n = 0.5 * vnoise1(s * 0.05 + seed)
+          + 0.3 * vnoise1(s * 0.12 + seed * 1.7)
+          + 0.2 * vnoise1(s * 0.28 + seed * 2.3)
+  return Math.max(0, Math.min(1, 0.66 + (n - 0.5) * 0.8)) // centred firm (~0.66), gentle spread
 }
 
 /** Ribbon geometry for one run: centreline + normal + seeded pressure per point (built once). */
@@ -238,8 +242,8 @@ export const STROKE_RIBBON_DEFAULTS: StrokeRibbonParams = {
   strokePx: 1.25,            // half of a 2.5px stroke
   taperPx: 14,
   grainFine: 300,
-  widthVar: 0.35,            // ±~35% width band — never sub-pixel at 2.5px base
-  toneAmp: 0.55,
+  widthVar: 0.3,             // gentle width band — never sub-pixel at 2.5px base
+  toneAmp: 0.35,             // gentle tone swing (0.55 read as a sinusoidal fade)
   tooth: 0.85,
   toothContrast: 0.5,        // midway — some fleck character without going harsh
   edgeSoft: 0.5,
