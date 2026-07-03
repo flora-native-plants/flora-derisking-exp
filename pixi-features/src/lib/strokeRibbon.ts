@@ -253,7 +253,11 @@ void main(){
 
   // Q2 edge: erode the LIMIT where grain is low; transition width stays fwidth (sharp, ragged).
   // Ascending form (edge0 < edge1) then invert — descending smoothstep is undefined GLSL.
-  float limit = 1.0 - uEdgeSoft * 0.45 * (1.0 - g);
+  // In stipple mode the dot-density falloff already feathers the edge, so decouple from the combed
+  // grain (gEdge→1): this makes uEdgeSoft/uGrainFine/uGrainStreak genuine no-ops when stippling,
+  // so the UI can honestly gray them out.
+  float gEdge = mix(g, 1.0, uStipple);
+  float limit = 1.0 - uEdgeSoft * 0.45 * (1.0 - gEdge);
   float aa = fwidth(edge);
   float cover = 1.0 - smoothstep(limit - aa, limit + aa, edge);
 

@@ -7,7 +7,7 @@
  * is in the fragment shader; meshes multiply-blend over a screen-fixed paper sprite. Deposition
  * grain uses a dedicated HIGH-frequency tile; the broad watercolor tile drives only the background.
  */
-import { ref, reactive, onMounted, onUnmounted, markRaw, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, markRaw, watch } from 'vue'
 import { Application, Assets, Container, Sprite, Texture, Mesh } from 'pixi.js'
 import { kinematicOpsForPath } from '../lib/kinematicStroke'
 import { buildStrokeMeshes, STROKE_RIBBON_DEFAULTS, STROKE_MEDIA, type StrokeMedium } from '../lib/strokeRibbon'
@@ -18,6 +18,9 @@ import { useFps } from '../shared/useFps'
 const { fps, frameMs } = useFps()
 const canvasEl = ref<HTMLCanvasElement>()
 const mediaKeys = Object.keys(STROKE_MEDIA) as StrokeMedium[]
+// Combed-grain controls (grain scale / tooth contrast / grain streak / edge softness) feed the
+// combed deposit + edge path, which stipple mode fully bypasses — gray them out when stippling.
+const combedOff = computed(() => opts.stipple >= 1)
 
 const opts = reactive({
   medium: 'graphite' as StrokeMedium,
@@ -194,14 +197,14 @@ function applyMedium(m: StrokeMedium) {
       <label>Stroke width <b>{{ opts.strokeWidth.toFixed(1) }}px</b><input type="range" min="0.5" max="16" step="0.5" v-model.number="opts.strokeWidth" /></label>
       <label>Squiggle <b>{{ opts.squiggle.toFixed(1) }}</b><input type="range" min="0" max="20" step="0.5" v-model.number="opts.squiggle" /></label>
       <label>Taper px <b>{{ opts.taperPx.toFixed(0) }}</b><input type="range" min="0" max="60" step="1" v-model.number="opts.taperPx" /></label>
-      <label>Grain scale <b>{{ opts.grainFine.toFixed(0) }}</b><input type="range" min="40" max="800" step="10" v-model.number="opts.grainFine" /></label>
+      <label :class="{ off: combedOff }" title="combed-grain control — no effect in stipple mode">Grain scale <b>{{ opts.grainFine.toFixed(0) }}</b><input type="range" min="40" max="800" step="10" v-model.number="opts.grainFine" :disabled="combedOff" /></label>
       <label>Width var <b>{{ opts.widthVar.toFixed(2) }}</b><input type="range" min="0" max="0.8" step="0.05" v-model.number="opts.widthVar" /></label>
       <label>Tone amp <b>{{ opts.toneAmp.toFixed(2) }}</b><input type="range" min="0" max="0.9" step="0.05" v-model.number="opts.toneAmp" /></label>
       <label>Tooth <b>{{ opts.tooth.toFixed(2) }}</b><input type="range" min="0" max="1" step="0.05" v-model.number="opts.tooth" /></label>
-      <label>Tooth contrast <b>{{ opts.toothContrast.toFixed(2) }}</b><input type="range" min="0" max="1" step="0.05" v-model.number="opts.toothContrast" /></label>
-      <label>Grain streak <b>{{ opts.grainStreak.toFixed(2) }}</b><input type="range" min="0" max="1" step="0.05" v-model.number="opts.grainStreak" /></label>
+      <label :class="{ off: combedOff }" title="combed-grain control — no effect in stipple mode">Tooth contrast <b>{{ opts.toothContrast.toFixed(2) }}</b><input type="range" min="0" max="1" step="0.05" v-model.number="opts.toothContrast" :disabled="combedOff" /></label>
+      <label :class="{ off: combedOff }" title="combed-grain control — no effect in stipple mode">Grain streak <b>{{ opts.grainStreak.toFixed(2) }}</b><input type="range" min="0" max="1" step="0.05" v-model.number="opts.grainStreak" :disabled="combedOff" /></label>
       <label>Build-up <b>{{ opts.buildup.toFixed(2) }}</b><input type="range" min="0" max="0.6" step="0.05" v-model.number="opts.buildup" /></label>
-      <label>Edge softness <b>{{ opts.edgeSoft.toFixed(2) }}</b><input type="range" min="0" max="0.95" step="0.05" v-model.number="opts.edgeSoft" /></label>
+      <label :class="{ off: combedOff }" title="combed-grain control — no effect in stipple mode">Edge softness <b>{{ opts.edgeSoft.toFixed(2) }}</b><input type="range" min="0" max="0.95" step="0.05" v-model.number="opts.edgeSoft" :disabled="combedOff" /></label>
       <label class="chk"><input type="checkbox" v-model="opts.paper" /> Paper background</label>
       <button class="btn" @click="reseed">🎲 Re-seed</button>
     </div>
@@ -222,6 +225,8 @@ canvas:active { cursor: grabbing; }
 .media-btn.on { background: #4b7a4b; color: #fff; border-color: #4b7a4b; }
 .panel label { display: block; margin-bottom: 8px; }
 .panel label b { color: #4b7a4b; }
+.panel label.off { opacity: 0.35; cursor: not-allowed; }
+.panel label.off input { pointer-events: none; }
 .panel input[type=range] { width: 100%; margin-top: 2px; }
 .chk { display: flex; align-items: center; gap: 6px; }
 .btn { width: 100%; padding: 5px; font-family: monospace; font-size: 11px; cursor: pointer; background: #4b7a4b; color: #fff; border: none; border-radius: 4px; margin-top: 6px; }
