@@ -10,15 +10,17 @@
 import { ref, reactive, onMounted, onUnmounted, markRaw, watch } from 'vue'
 import { Application, Assets, Container, Sprite, Texture, Mesh } from 'pixi.js'
 import { kinematicOpsForPath } from '../lib/kinematicStroke'
-import { buildStrokeMeshes, STROKE_RIBBON_DEFAULTS } from '../lib/strokeRibbon'
+import { buildStrokeMeshes, STROKE_RIBBON_DEFAULTS, STROKE_MEDIA, type StrokeMedium } from '../lib/strokeRibbon'
 import { PaperGrainFilter } from '../lib/filters/PaperGrainFilter'
 import { pencilTestShapes } from '../fixtures/pencilTestShapes'
 import { useFps } from '../shared/useFps'
 
 const { fps, frameMs } = useFps()
 const canvasEl = ref<HTMLCanvasElement>()
+const mediaKeys = Object.keys(STROKE_MEDIA) as StrokeMedium[]
 
 const opts = reactive({
+  medium: 'graphite' as StrokeMedium,
   strokeWidth: 2.5,
   squiggle: 6, cpSpacing: 40, overshoot: 4, cornerAngle: 35, seed: 42,
   taperPx: STROKE_RIBBON_DEFAULTS.taperPx,
@@ -158,6 +160,15 @@ function onPD(e: PointerEvent) { isPanning = true; panStart = { x: e.clientX - c
 function onPM(e: PointerEvent) { if (!isPanning) return; camX = e.clientX - panStart.x; camY = e.clientY - panStart.y; app.stage.position.set(camX, camY); syncCamera() }
 function onPU() { isPanning = false }
 function reseed() { opts.seed = Math.floor(Math.random() * 100000) + 1 }
+
+// Apply a medium preset: copy its material params + switch to its native width. Material + width
+// are live uniforms, so this is a uniform update, not a geometry rebuild.
+function applyMedium(m: StrokeMedium) {
+  opts.medium = m
+  const preset = STROKE_MEDIA[m]
+  opts.strokeWidth = preset.widthPx
+  Object.assign(opts, preset.material)
+}
 </script>
 
 <template>
@@ -170,6 +181,11 @@ function reseed() { opts.seed = Math.floor(Math.random() * 100000) + 1 }
     </div>
     <div class="panel">
       <div class="title">Pencil Ribbon · vertex-expanded mesh (Phase C)</div>
+      <div class="media">
+        <button v-for="key in mediaKeys" :key="key"
+          :class="['media-btn', { on: opts.medium === key }]"
+          @click="applyMedium(key)">{{ STROKE_MEDIA[key].label }}</button>
+      </div>
       <label>Stroke width <b>{{ opts.strokeWidth.toFixed(1) }}px</b><input type="range" min="0.5" max="16" step="0.5" v-model.number="opts.strokeWidth" /></label>
       <label>Squiggle <b>{{ opts.squiggle.toFixed(1) }}</b><input type="range" min="0" max="20" step="0.5" v-model.number="opts.squiggle" /></label>
       <label>Taper px <b>{{ opts.taperPx.toFixed(0) }}</b><input type="range" min="0" max="60" step="1" v-model.number="opts.taperPx" /></label>
@@ -196,6 +212,9 @@ canvas:active { cursor: grabbing; }
 .fps { font-size: 18px; font-weight: bold; } .fps span { font-size: 12px; color: #888; }
 .panel { position: absolute; top: 10px; right: 10px; font-family: monospace; font-size: 11px; color: #333; line-height: 1.5; background: rgba(255,255,255,0.9); padding: 12px 14px; border-radius: 6px; border: 1px solid #ddd; width: 230px; }
 .title { font-weight: bold; margin-bottom: 10px; color: #222; }
+.media { display: flex; gap: 4px; margin-bottom: 10px; }
+.media-btn { flex: 1; padding: 5px 4px; font-family: monospace; font-size: 10px; cursor: pointer; background: #efece5; color: #555; border: 1px solid #ddd; border-radius: 4px; line-height: 1.2; }
+.media-btn.on { background: #4b7a4b; color: #fff; border-color: #4b7a4b; }
 .panel label { display: block; margin-bottom: 8px; }
 .panel label b { color: #4b7a4b; }
 .panel input[type=range] { width: 100%; margin-top: 2px; }

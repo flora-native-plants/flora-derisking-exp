@@ -271,6 +271,50 @@ export const STROKE_RIBBON_DEFAULTS: StrokeRibbonParams = {
 }
 
 /**
+ * Selectable drawing MEDIUM — a bundle of material params, orthogonal to geometry roughness.
+ * The medium is a per-object choice (like Excalidraw sloppiness): graphite for heavy profile
+ * lines, crayon/colored-pencil for beds & symbols.
+ *
+ * KEY: each medium carries its OWN native width. Soft graphite only reads at width (the tooth
+ * needs room across the ribbon); crayon reads at thin real-use width because the waxy *speckle*
+ * IS the look, not a fallback from a failed soft band. Offering both is the whole point — a thin
+ * line can't be soft graphite, but it can be convincing crayon.
+ */
+export type StrokeMedium = 'graphite' | 'crayon'
+
+type StrokeMaterial = Pick<StrokeRibbonParams,
+  'grainFine' | 'widthVar' | 'toneAmp' | 'tooth' | 'toothContrast' | 'grainStreak' | 'buildup' | 'edgeSoft'>
+
+export const STROKE_MEDIA: Record<StrokeMedium, {
+  label: string
+  widthPx: number          // native stroke width for this medium
+  material: StrokeMaterial
+}> = {
+  graphite: {
+    label: 'Graphite',
+    widthPx: 6,            // soft graphite reads only at width — thin collapses to clean-pen
+    material: {
+      grainFine: 300, widthVar: 0.30, toneAmp: 0.35, tooth: 0.85,
+      toothContrast: 0.50, grainStreak: 0.60, buildup: 0.25, edgeSoft: 0.50,
+    },
+  },
+  crayon: {
+    label: 'Crayon / colored pencil',
+    widthPx: 3,            // waxy speckle reads at thin real-use width
+    material: {
+      grainFine: 220,      // coarser tooth cell → visible waxy grain even when thin
+      widthVar: 0.25,
+      toneAmp: 0.40,
+      tooth: 1.0,          // full paper-tooth breakup
+      toothContrast: 0.85, // hard pepper-fleck skips = the dotted, skipping crayon deposit
+      grainStreak: 0.10,   // near-isotropic speckle (crayon grain is dotty, not combed)
+      buildup: 0.12,       // crayon lays down more evenly than build-up-in-the-middle graphite
+      edgeSoft: 0.70,      // waxy ragged edges
+    },
+  },
+}
+
+/**
  * Build one Mesh per run of a cached op-list. Geometry is built ONCE (no zoom rebuild); width and
  * zoom are uniforms. `grain` is the tiling high-frequency deposition tile. Live values (uZoom,
  * uStrokePx, uTaperPx, uGrainFine, uToneAmp, uTooth, uEdgeSoft) can be updated on the returned
