@@ -33,6 +33,7 @@ const groups: Group[] = [
       { id: 'dappled',     label: 'Dappled Light',     comp: A('./tabs/TabDappledLight.vue') },
       { id: 'botanical',   label: 'Botanical Illustration', comp: A('./tabs/TabBotanicalIllustration.vue') },
       { id: 'botvariants', label: 'Botanical Variants', comp: A('./tabs/TabBotanicalVariants.vue') },
+      { id: 'hnmaterial', label: 'Wash Material (H–N)', comp: A('./tabs/TabWashMaterialHN.vue') },
       { id: 'watersim',    label: 'Watercolor Sim',    comp: A('./tabs/TabWatercolorSim.vue') },
     ],
   },
