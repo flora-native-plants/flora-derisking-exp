@@ -37,7 +37,12 @@ async function run(): Promise<void> {
   const browser = await chromium.launch({ headless: true })
 
   // Pre-select the H–N tab via localStorage so it's the active tab on load.
-  const context = await browser.newContext({ viewport: { width: 1800, height: 500 } })
+  // Viewport is tall enough for the 2-row grid; deviceScaleFactor 2 captures the
+  // retina backing store (the tab renders filter passes at 2× → true quality).
+  const context = await browser.newContext({
+    viewport: { width: 1000, height: 780 },
+    deviceScaleFactor: 2,
+  })
   await context.addInitScript(() => {
     localStorage.setItem('pixi-features-active-v2', 'hnmaterial')
   })

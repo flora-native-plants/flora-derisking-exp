@@ -263,16 +263,17 @@ async function setupScene(washTex: Texture) {
   addLabel(p3, 'H–N @ 8× zoom (scale 0.125)', LABEL_DY)
 
   // -------------------------------------------------------------------------
-  // Panel 4: H–N tiled — scale=4 packs ~4 wash tile-lengths; checks seams
+  // Panel 4: H–N tiled — scale=2 packs ~2 wash tile-lengths; checks seams.
+  // (Lowered from 4 → 2: larger features, less busy, less minification aliasing.)
   // -------------------------------------------------------------------------
 
   const p4 = markRaw(new Container())
   p4.position.set(panelX(3), panelYFor(3))
   stage.addChild(p4)
 
-  const tiledFilter = makeHnFilter(filterBase, 4, 0, washTex)
+  const tiledFilter = makeHnFilter(filterBase, 2, 0, washTex)
   addHnQuad(p4, PANEL_W, PANEL_H, tiledFilter)
-  addLabel(p4, 'H–N tiled ~4× (scale 4)', LABEL_DY)
+  addLabel(p4, 'H–N tiled ~2× (scale 2)', LABEL_DY)
 
   // -------------------------------------------------------------------------
   // Panel 5: 4 seeds — 2×2 grid of sub-quads, seed 0..3
@@ -331,6 +332,8 @@ onMounted(async () => {
       height:     CANVAS_H,
       antialias:  true,
       background: BG,
+      resolution: Math.min(window.devicePixelRatio || 1, 2), // retina: filter passes render at 2× → crisper H–N output
+      autoDensity: true,
     })
 
     status.value = 'Loading wash texture…'
