@@ -103,7 +103,7 @@ function jacobi3(S: number[]): { eigvals: number[]; eigvecs: number[] } {
       if (Math.abs(Apq) < 1e-12) continue
       const App = A[off(p,p)]
       const Aqq = A[off(q,q)]
-      const theta = 0.5 * (Aqq - App) / Apq
+      const theta = 0.5 * (App - Aqq) / Apq
       const t = (theta >= 0 ? 1 : -1) / (Math.abs(theta) + Math.sqrt(1 + theta * theta))
       const cosT = 1 / Math.sqrt(1 + t * t)
       const sinT = t * cosT
@@ -193,15 +193,21 @@ export function computeColorDecorrelation(
 
 /**
  * Build forward (T) and inverse (Tinv) Gaussianization LUTs for one decorrelated channel.
- * channel: Float32Array of N values (any range, typically 0..1 after decorrelation).
- * size: LUT length (default 256). Both T and Tinv are indexed by normalized 0..1.
+ * channel: Float32Array of N values (any range, including negative decorrelated values).
+ * size: LUT length (default 256).
+ *
+ * Both T and Tinv are indexed by a value normalized to [0,1] using [min, max] of channel:
+ *   - To index T with a raw value x: T[round((x - min) / (max - min) * (size-1))]
+ *   - Tinv outputs values in [0,1] (same normalization); to recover raw: Tinv[i]*(max-min)+min
+ *
+ * Returns min/max so callers can map arbitrary channel values into LUT index space.
  *
  * Gaussian target: N(0.5, 1/6), clamped to [0,1].
  */
 export function buildGaussianLUT(
   channel: Float32Array,
   size = 256,
-): { T: Float32Array; Tinv: Float32Array } {
+): { T: Float32Array; Tinv: Float32Array; min: number; max: number } {
   const sorted = Float32Array.from(channel).sort()
   const N = sorted.length
 
@@ -234,9 +240,9 @@ export function buildGaussianLUT(
     const u = Math.max(0.5 / N, Math.min(1 - 0.5 / N, normalCDF((g - 0.5) * 6)))
     // Look up in sorted array
     const idx = Math.max(0, Math.min(N - 1, Math.round(u * N) - 1))
-    // Normalize back to 0..1
+    // Normalize to [0,1] (caller can recover raw with Tinv[i]*(max-min)+min)
     Tinv[i] = (sorted[idx] - minVal) / range
   }
 
-  return { T, Tinv }
+  return { T, Tinv, min: minVal, max: maxVal }
 }

@@ -22,6 +22,42 @@ describe('color decorrelation', () => {
     expect(back[1]).toBeCloseTo(centered[1], 5)
     expect(back[2]).toBeCloseTo(centered[2], 5)
   })
+
+  it('forward transform produces decorrelated channels (off-diagonal covariance ≈ 0)', () => {
+    // Strongly correlated dataset: R and G track together.
+    const N = 200
+    const rgb = new Float32Array(N * 3)
+    // Use a fixed seed-like pattern so this test is deterministic.
+    for (let i = 0; i < N; i++) {
+      const r = (i / N)
+      rgb[i*3+0] = r
+      rgb[i*3+1] = r * 0.9 + 0.05          // G highly correlated with R
+      rgb[i*3+2] = ((i * 37) % N) / N * 0.3 // B mostly independent
+    }
+    const { mean, forward } = computeColorDecorrelation(rgb)
+    // Apply forward to each centered pixel and compute covariance of decorrelated space.
+    const dec: Array<[number,number,number]> = []
+    for (let i = 0; i < N; i++) {
+      const centered: [number,number,number] = [
+        rgb[i*3+0] - mean[0],
+        rgb[i*3+1] - mean[1],
+        rgb[i*3+2] - mean[2],
+      ]
+      dec.push(apply3(forward, centered))
+    }
+    // Compute covariance of decorrelated channels.
+    const cov = new Array(9).fill(0)
+    for (const d of dec) {
+      cov[0] += d[0]*d[0]; cov[1] += d[0]*d[1]; cov[2] += d[0]*d[2]
+      cov[4] += d[1]*d[1]; cov[5] += d[1]*d[2]
+      cov[8] += d[2]*d[2]
+    }
+    for (let k = 0; k < 9; k++) cov[k] /= N
+    // Off-diagonals must be near zero (decorrelated).
+    expect(Math.abs(cov[1])).toBeLessThan(1e-10)   // cov(d0, d1)
+    expect(Math.abs(cov[2])).toBeLessThan(1e-10)   // cov(d0, d2)
+    expect(Math.abs(cov[5])).toBeLessThan(1e-10)   // cov(d1, d2)
+  })
 })
 
 describe('gaussian LUT', () => {
