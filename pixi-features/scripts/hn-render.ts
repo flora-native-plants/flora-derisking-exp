@@ -88,8 +88,8 @@ async function run(): Promise<void> {
   if (consoleErrors.length) {
     console.warn(`\n⚠ ${consoleErrors.length} browser error(s) — see above`)
   }
-  console.log('\nDone. Build montage next:')
-  console.log('  npx tsx scripts/hn-render.ts --montage  (or run the montage step manually)')
+  console.log(`\nDone. Wrote ${stripPath} + ${midPath}.`)
+  console.log('  Montage (raw vs H–N crop) is a manual one-shot: magick montage … (see .watercolor/hn-acceptance.png)')
 }
 
 run().catch(err => { console.error(err); process.exit(1) })

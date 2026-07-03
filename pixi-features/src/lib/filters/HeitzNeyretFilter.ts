@@ -9,9 +9,12 @@ import { Filter, GlProgram, UniformGroup, defaultFilterVert, Texture } from 'pix
  * decorrelated/Gaussianized colour space.
  *
  * Construction:
- *   const f = new HeitzNeyretFilter({ Tinv, T, forward, inverse, mean, scale, seed })
+ *   const f = new HeitzNeyretFilter({ Tinv, T, forward, inverse, mean, lutMin, lutMax, scale, seed })
  * where T/Tinv are 256×1 RGBA textures (R=ch0, G=ch1, B=ch2) built by the
  * TabWashMaterialHN setup, and forward/inverse/mean come from Task-1 precompute.
+ * lutMin/lutMax are the per-channel [min,max] decorrelated ranges (REQUIRED — the
+ * shader normalizes a raw decorrelated value into LUT index space with them, and
+ * de-normalizes Tinv's [0,1] output back via raw*(max-min)+min).
  *
  * GLSL mat3 pitfall: PixiJS v8 packs mat3 UBO members with std140 column-padding.
  * We bypass this entirely by uploading the matrix rows as 3 separate vec3 uniforms
@@ -224,7 +227,7 @@ export interface HeitzNeyretOpts {
 
 function seedToOffset(seed: number): Float32Array {
   // Two distinct irrational-number-multiplied offsets to keep axes from correlating.
-  return new Float32Array([seed * 0.1, seed * 0.1732050808]) // 0.173.. = 1/sqrt(33)
+  return new Float32Array([seed * 0.1, seed * 0.1732050808]) // 0.17320508 = sqrt(3)/10 (irrational y-step decorrelates seeds)
 }
 
 export class HeitzNeyretFilter extends Filter {
