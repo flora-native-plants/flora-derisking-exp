@@ -1,9 +1,16 @@
 # Pencil / Graphite Material — Status & Handoff (2026-07-03)
 
-**Where things stand:** procedural material is *in the neighborhood* but clearly distinguishable
-from the AI reference marks. Geoff is not thrilled with the procedural results and wants to play
-with the interactive online tools to find a mark that *feels* right before we build more. This doc
-captures what we did, what we learned, and the live tools to try.
+**Where things stand (updated end of 2026-07-03 session):** after Geoff pointed at the Ciallo
+**airbrush/stipple** stroke as "authentic graphite on paper," we built a **stipple deposition** mode
+into the ribbon shader — a dot-scatter of graphite powder on our *believable* kinematic path (not a
+robotic sine). It's the closest we've gotten: the black stipple border reads as genuine graphite.
+It matches the reference's **light-to-mid** marks; still doesn't reach the **dense-heavy** end
+(near-solid dark core). This doc is the pick-up point.
+
+**Latest commits on `plant-style-playground` (NOT pushed):**
+- `748943f` — selectable MEDIUM (Graphite / Crayon presets + tab selector)
+- `c99570e` — **stipple deposition** (Graphite-stipple medium) + status doc
+- `5648bf3` — gray out combed-grain sliders in stipple mode (honest no-ops)
 
 ---
 
@@ -30,17 +37,29 @@ The testbed is the **"Pencil Ribbon (mesh)"** tab in `pixi-features` (dev server
 - **Naturalness passes** (earlier this week): directional grain, edge-biased tooth, tonal build-up,
   tooth-contrast control, thin-stroke dropout fix. Left it fully procedural — never wired a scanned
   mark texture.
-- **Selectable MEDIUM** (this session, commit `748943f`) — `STROKE_MEDIA` presets + a Graphite/Crayon
-  selector in the tab. One engine, two material presets, each at its **native width**:
-  - **Graphite** — native 6px. Soft directional tooth. Reads as graphite only *at width*.
-  - **Crayon / colored pencil** — native 3px. Waxy pepper-skip speckle. Reads *at thin* real-use width.
+- **Selectable MEDIUM** — `STROKE_MEDIA` presets + a selector in the tab. One engine, N material
+  presets, each at its **native width**:
+  - **Graphite (combed)** — 6px. Soft directional tooth (grain stretched along travel). Reads at width.
+  - **Graphite (stipple)** — 9px. **Dot-scatter graphite powder** (the Ciallo-airbrush look). The
+    current best. `stipple: 1, stippleScale: 1.4`, fine cells → dense core feathering to edges.
+  - **Crayon / colored pencil** — 3px. Waxy pepper-skip speckle. Reads *at thin* real-use width.
+- **Stipple shader** (commit `c99570e`) — added to the fragment shader: isotropic soft-dot scatter,
+  world-anchored **two-octave crossfade** (zoom-stable dot size, same trick as the grain field),
+  density high in core / feathering to edges / rising with pressure. `stipple`/`stippleScale` params
+  on `StrokeRibbonParams`. Toggle/blend via `uStipple` (0 combed → 1 stipple).
+- **Slider validity** (commit `5648bf3`) — in stipple mode, the combed-grain sliders (Grain scale,
+  Tooth contrast, Grain streak, Edge softness) are grayed out + disabled (`combedOff` computed).
+  Made honest: edge erosion decoupled from combed grain when stippling (`gEdge = mix(g, 1.0,
+  uStipple)`) so those four are genuine no-ops. NO stipple-specific slider exists yet (dot scale /
+  core density are baked into the preset) — adding them is the obvious next UX step for live tuning.
 
-### Capture harnesses (output → `.naturalize-out/`, gitignored)
+### Capture harnesses (output → `.naturalize-out/`, gitignored; dev server on :5202)
 - `scripts/shot-ribbon-thin.ts` — 2.5px @ 1× (real-use condition)
 - `scripts/shot-ribbon-detail.ts` — 12px @ ~3.5× (diagnostic)
-- `scripts/shot-ribbon-media.ts` — each medium at its native width
+- `scripts/shot-ribbon-media.ts` — each medium (combed / stipple / crayon) at its native width
+- `scripts/shot-ribbon-panel.ts` — full control panel in stipple mode (verifies slider gray-out)
 - `scripts/compare-vs-refs.ts` — **our latest renders next to the AI reference ladder** in one frame
-  (`.naturalize-out/compare-vs-refs.png`)
+  (`.naturalize-out/compare-vs-refs.png`). Run `shot-ribbon-media` FIRST, then this.
 
 ---
 
@@ -60,20 +79,20 @@ line. At 2.5px real-use thinness there's ~2px across the ribbon; AA eats the too
 - Medium = a **per-object choice**, orthogonal to the geometry-roughness ladder (Crisp/Architect/
   Artist from the kinematic work).
 
-### B. Honest gap vs. the reference (from `compare-vs-refs.png`)
-We are NOT matching the reference yet. Three gaps:
-1. **Grain character (biggest tell):** reference = fine, dense, *powdery* deposit. Ours = coarse
-   diagonal *striations* (the `grainStreak: 0.6` directional stretch reads as combed/hatched/
-   wood-grain). Reference is mostly fine isotropic speckle with little directionality.
-2. **Tonal drama:** reference ramps whisper→near-black with pressure; ours is comparatively flat.
-3. **Width:** even our "wide" 6px is thinner than the reference's fattest marks.
+### B. Honest gap vs. the reference (from `compare-vs-refs.png` — regenerate to refresh)
+The **stipple** medium closed the biggest gap (grain character): it's now fine isotropic dot-powder,
+not combed striations. Remaining gap:
+1. ~~Grain character~~ — **FIXED by stipple.** Was combed striations (`grainStreak: 0.6`); now
+   dot-scatter powder.
+2. **Tonal drama (the remaining gap):** reference ramps whisper→near-black; the reference's *heavy*
+   arcs go near-solid black in the core with granular edges. Ours stays uniformly dotty and never
+   reaches that dense dark core. **Fix:** ramp stipple density/dot-overlap harder with pressure so
+   the core merges toward solid at high pressure while edges stay feathered. (Untried — next tuning.)
+3. **Colored strokes read light** (expected — colored ink at mid value; graphite-gray reads best).
 
-**Cheapest procedural next step (untried):** de-comb — drop `grainStreak` to ~0.1–0.2 + use a finer
-grain tile so tooth reads as powder not stripes; add more tonal range. Would close *some* of the gap.
-
-**The ceiling:** the reference's fine powder is exactly what **stamping a real scanned graphite
-texture** gives you for free (you sample actual graphite dust instead of stretching a procedural
-tile). Procedural can get closer; the scanned-texture route is what would truly match.
+**The ceiling (unchanged):** the reference's fine powder is what **stamping a real scanned graphite
+texture** gives for free. Our procedural stipple approximates it and is zoom-stable + asset-free;
+the scanned-texture route (pass B via Joshi/p5.brush) is the higher ceiling if stipple plateaus.
 
 ---
 
@@ -123,15 +142,25 @@ it's built (both open-source: libmypaint is ISC, freely portable).
 
 ---
 
-## 6. Open decisions (parked until Geoff finds a mark that feels good)
+## 6. Next steps & open decisions
 
-1. **Which medium(s) are we actually shipping** — graphite, colored-pencil/crayon, ink, or a
-   selectable set? (Current lean: selectable set, per-object.)
-2. **Procedural vs. scanned-texture stamp (pass B).** Procedural is cheaper and already zoom-stable;
-   scanned stamp has the higher ceiling (matches the reference's fine powder) but adds the
-   repetition-on-long-strokes and asset-extraction work.
-3. If pass B: build from **Joshi** (WebGL analytic) or **p5.brush** (WebGL stamp) — NOT Ciallo's
-   WebGPU path.
+**Immediate next steps (concrete):**
+1. **Tonal ramp** — make stipple density/dot-overlap ramp harder with pressure so heavy strokes fill
+   to near-solid dark core (edges stay feathered). Closes the last gap to the reference's heavy end.
+2. **Stipple sliders** — expose `stipple` (dot scale / core density) as live sliders so Geoff can dial
+   the look on **real hardware** (headless software-GL AA is unreliable — the thing I can't judge).
+   Gray *those* out in the combed modes, symmetrically.
+3. **Eyeball on real hardware** — flip to "Graphite (stipple)" in the tab. Headless is lying about AA.
+
+**Open decisions (parked):**
+1. **Which medium(s) ship** — graphite (combed and/or stipple), crayon, ink? (Lean: selectable set,
+   per-object choice, orthogonal to the geometry-roughness ladder.)
+2. **Procedural stipple vs. scanned-texture stamp (pass B).** Stipple is cheap + zoom-stable + asset-
+   free and now looks good; pass B (scanned graphite along path) has the higher ceiling if stipple
+   plateaus. If pass B: build from **Joshi** (WebGL analytic) or **p5.brush** (WebGL stamp), NOT
+   Ciallo's WebGPU compute path.
+3. **flora-studio port** — once a medium is chosen, wire `medium` as a per-object StrokeStyle field on
+   `PixiFeatureLine.drawPath` (must replay cached ops on setZoom, never regen).
 
 ## 7. Key files & context
 - Testbed: `pixi-features` → "Pencil Ribbon (mesh)" tab (`src/tabs/TabPencilRibbon.vue`)
