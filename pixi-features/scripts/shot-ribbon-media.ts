@@ -27,10 +27,14 @@ const clip = {
   height: box.height * 0.42,
 }
 
-for (const label of ['Graphite', 'Crayon / colored pencil']) {
+const media: [string, string][] = [
+  ['Graphite (combed)', 'graphite'],
+  ['Graphite (stipple)', 'graphite-stipple'],
+  ['Crayon / colored pencil', 'crayon'],
+]
+for (const [label, tag] of media) {
   await page.getByRole('button', { name: label, exact: true }).click()
   await page.waitForTimeout(600)
-  const tag = label.startsWith('Graphite') ? 'graphite' : 'crayon'
   await page.screenshot({ path: `${OUT}/ribbon-media-${tag}.png`, clip })
   console.log(`wrote ${OUT}/ribbon-media-${tag}.png`)
 }

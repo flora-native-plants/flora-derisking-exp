@@ -175,8 +175,36 @@ uniform float uToothContrast;// 0 even fine tooth -> 1 hard pepper-fleck skips
 uniform float uGrainStreak;  // 0 isotropic speckle -> 1 grain stretched into striations along travel
 uniform float uBuildup;      // 0..1 tonal build-up: darker mid-stroke, lighter toward the ends
 uniform float uEdgeSoft;     // 0..1 edge erosion amount (position, not transition width)
+uniform float uStipple;      // 0 combed-grain deposit -> 1 stipple (scatter of soft dots = graphite powder)
+uniform float uStippleScale; // world-units per stipple cell (dot spacing / size)
 
 float hash11(float p){ p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
+float hash21(vec2 p){ p = fract(p * vec2(123.34, 345.45)); p += dot(p, p + 34.345); return fract(p.x * p.y); }
+
+// Stipple deposition: scatter of soft round dots, isotropic, world-anchored — the fine "graphite
+// powder settling into tooth" look (vs the combed striations of directional grain). density =
+// fraction of cells carrying a dot; the caller folds edge-falloff + pressure into it so dots thin
+// toward the ribbon edges (feathered) and with low pressure.
+float stippleOctave(vec2 p, float density){
+  vec2 cell = floor(p), f = fract(p);
+  float cover = 0.0;
+  for(int j = -1; j <= 1; j++){ for(int i = -1; i <= 1; i++){
+    vec2 c = cell + vec2(float(i), float(j));
+    if(hash21(c) > 1.0 - density){
+      vec2 jit = vec2(hash21(c + 7.1), hash21(c + 19.3));
+      float d = length(f - vec2(float(i), float(j)) - jit);
+      float r = 0.46 * (0.6 + 0.4 * hash21(c + 3.7));      // varied dot radius (bigger → denser core)
+      cover = max(cover, 1.0 - smoothstep(r * 0.45, r, d)); // soft dot
+    }
+  }}
+  return cover;
+}
+// Two-octave crossfade on zoom → apparent dot size stays constant (same trick as grainField).
+float stipple(vec2 world, float density){
+  float L = log2(max(uZoom, 0.0001)); float o = floor(L); float fr = fract(L);
+  vec2 base = world / uStippleScale;
+  return mix(stippleOctave(base * exp2(o), density), stippleOctave(base * exp2(o + 1.0), density), fr);
+}
 float lum(vec3 c){ return dot(c, vec3(0.299,0.587,0.114)); }
 // grain field, world-anchored, two-octave crossfade for constant apparent size on zoom
 float grainField(vec2 uv){
@@ -211,7 +239,17 @@ void main(){
   float thresh = mix(0.72, 0.18, pressure) + 0.28 * edge * edge;
   float wth = min(fwidth(gc), 0.2) + mix(0.06, 0.006, uToothContrast);
   float deposit = smoothstep(thresh - wth, thresh + wth, gc);
-  float tooth = mix(1.0, deposit, uTooth * (1.0 - 0.6 * pressure));
+
+  // Stipple deposition (graphite powder): dot density high in the core, feathering to ~0 before the
+  // edge, and rising with pressure. Blend against the combed-grain deposit by uStipple.
+  float dens = clamp((1.15 - 0.85 * edge * edge) * mix(0.6, 1.0, pressure), 0.0, 1.0);
+  float stip = stipple(vWorld, dens);
+  deposit = mix(deposit, stip, uStipple);
+
+  // Stipple wants FULL tooth authority (dot = dark, gap = clean paper); the grain path softens the
+  // breakup at high pressure. Blend the two behaviours by uStipple so gaps don't wash to muddy ink.
+  float toothAmt = uTooth * mix(1.0 - 0.6 * pressure, 1.0, uStipple);
+  float tooth = mix(1.0, deposit, toothAmt);
 
   // Q2 edge: erode the LIMIT where grain is low; transition width stays fwidth (sharp, ragged).
   // Ascending form (edge0 < edge1) then invert — descending smoothstep is undefined GLSL.
@@ -252,6 +290,8 @@ export interface StrokeRibbonParams {
   grainStreak: number   // 0 isotropic -> 1 directional striations along the stroke
   buildup: number       // 0..1 tonal build-up toward mid-stroke
   edgeSoft: number
+  stipple: number       // 0 combed-grain deposit -> 1 stipple (dot-scatter graphite powder)
+  stippleScale: number  // world-units per stipple cell (dot spacing / size)
   seed: number       // pressure-field seed (per-run variation is folded in by run index)
 }
 
@@ -267,6 +307,8 @@ export const STROKE_RIBBON_DEFAULTS: StrokeRibbonParams = {
   grainStreak: 0.6,          // directional striations along the stroke (vs isotropic speckle)
   buildup: 0.25,             // gentle mid-stroke tonal build-up
   edgeSoft: 0.5,
+  stipple: 0,                // combed-grain deposit by default
+  stippleScale: 2.5,
   seed: 42,
 }
 
@@ -280,10 +322,11 @@ export const STROKE_RIBBON_DEFAULTS: StrokeRibbonParams = {
  * IS the look, not a fallback from a failed soft band. Offering both is the whole point — a thin
  * line can't be soft graphite, but it can be convincing crayon.
  */
-export type StrokeMedium = 'graphite' | 'crayon'
+export type StrokeMedium = 'graphite' | 'graphite-stipple' | 'crayon'
 
 type StrokeMaterial = Pick<StrokeRibbonParams,
-  'grainFine' | 'widthVar' | 'toneAmp' | 'tooth' | 'toothContrast' | 'grainStreak' | 'buildup' | 'edgeSoft'>
+  'grainFine' | 'widthVar' | 'toneAmp' | 'tooth' | 'toothContrast' | 'grainStreak' | 'buildup' | 'edgeSoft'
+  | 'stipple' | 'stippleScale'>
 
 export const STROKE_MEDIA: Record<StrokeMedium, {
   label: string
@@ -291,11 +334,21 @@ export const STROKE_MEDIA: Record<StrokeMedium, {
   material: StrokeMaterial
 }> = {
   graphite: {
-    label: 'Graphite',
+    label: 'Graphite (combed)',
     widthPx: 6,            // soft graphite reads only at width — thin collapses to clean-pen
     material: {
       grainFine: 300, widthVar: 0.30, toneAmp: 0.35, tooth: 0.85,
       toothContrast: 0.50, grainStreak: 0.60, buildup: 0.25, edgeSoft: 0.50,
+      stipple: 0, stippleScale: 2.5,
+    },
+  },
+  'graphite-stipple': {
+    label: 'Graphite (stipple)',
+    widthPx: 9,            // dot-scatter powder needs width to show a dense core feathering to edges
+    material: {
+      grainFine: 300, widthVar: 0.30, toneAmp: 0.45, tooth: 1.0,
+      toothContrast: 0.50, grainStreak: 0.0, buildup: 0.25, edgeSoft: 0.60,
+      stipple: 1.0, stippleScale: 1.4,   // fine cells → many dots across → dense core, fine powder
     },
   },
   crayon: {
@@ -310,6 +363,7 @@ export const STROKE_MEDIA: Record<StrokeMedium, {
       grainStreak: 0.10,   // near-isotropic speckle (crayon grain is dotty, not combed)
       buildup: 0.12,       // crayon lays down more evenly than build-up-in-the-middle graphite
       edgeSoft: 0.70,      // waxy ragged edges
+      stipple: 0, stippleScale: 2.5,
     },
   },
 }
@@ -344,6 +398,8 @@ export function buildStrokeMeshes(
       uGrainStreak: { value: p.grainStreak, type: 'f32' },
       uBuildup:   { value: p.buildup, type: 'f32' },
       uEdgeSoft:  { value: p.edgeSoft, type: 'f32' },
+      uStipple:   { value: p.stipple, type: 'f32' },
+      uStippleScale: { value: p.stippleScale, type: 'f32' },
     })
     const shader = new Shader({ glProgram: program(), resources: { uGrainTex: grain, strokeUniforms: uniforms } })
     // Mesh's shader generic expects a TextureShader; our custom shader binds its texture as a

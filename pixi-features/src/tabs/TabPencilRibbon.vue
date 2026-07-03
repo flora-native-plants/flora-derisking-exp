@@ -32,6 +32,8 @@ const opts = reactive({
   grainStreak: STROKE_RIBBON_DEFAULTS.grainStreak,
   buildup: STROKE_RIBBON_DEFAULTS.buildup,
   edgeSoft: STROKE_RIBBON_DEFAULTS.edgeSoft,
+  stipple: STROKE_RIBBON_DEFAULTS.stipple,
+  stippleScale: STROKE_RIBBON_DEFAULTS.stippleScale,
   paper: true,
 })
 
@@ -63,6 +65,7 @@ function rebuild(): void {
       widthVar: opts.widthVar, toneAmp: opts.toneAmp, tooth: opts.tooth,
       toothContrast: opts.toothContrast, grainStreak: opts.grainStreak,
       buildup: opts.buildup, edgeSoft: opts.edgeSoft,
+      stipple: opts.stipple, stippleScale: opts.stippleScale,
     })
     for (const m of built) { world.addChild(m); meshes.push(m) }
   }
@@ -84,6 +87,8 @@ function setLiveUniforms(): void {
     u.uGrainStreak = opts.grainStreak
     u.uBuildup = opts.buildup
     u.uEdgeSoft = opts.edgeSoft
+    u.uStipple = opts.stipple
+    u.uStippleScale = opts.stippleScale
   }
 }
 
@@ -135,7 +140,7 @@ onUnmounted(() => {
 
 // Geometry-changing params rebuild; width/material params are live uniform updates (no rebuild).
 watch(() => [opts.squiggle, opts.cpSpacing, opts.overshoot, opts.cornerAngle, opts.seed], () => rebuild())
-watch(() => [opts.strokeWidth, opts.taperPx, opts.grainFine, opts.widthVar, opts.toneAmp, opts.tooth, opts.toothContrast, opts.grainStreak, opts.buildup, opts.edgeSoft], () => setLiveUniforms())
+watch(() => [opts.strokeWidth, opts.taperPx, opts.grainFine, opts.widthVar, opts.toneAmp, opts.tooth, opts.toothContrast, opts.grainStreak, opts.buildup, opts.edgeSoft, opts.stipple, opts.stippleScale], () => setLiveUniforms())
 watch(() => opts.paper, () => applyPaper())
 
 function applyPaper(): void {
