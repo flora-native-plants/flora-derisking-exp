@@ -33,9 +33,10 @@ const SEED_GAP  = 8
 const SEED_SIZE = Math.floor((PANEL_W - SEED_GAP) / 2) // ≈136
 const BG        = 0xf2ead4
 
-// Canvas is fixed-size — 5 panels wide; container becomes scrollable if needed.
-const CANVAS_W = 5 * PANEL_W + 4 * GAP + 2 * PADDING
-const CANVAS_H = PANEL_H + LABEL_H + 2 * PADDING
+// Canvas is fixed-size — panels in a 3-column grid (2 rows); container scrolls if needed.
+const COLS     = 3
+const CANVAS_W = COLS * PANEL_W + (COLS - 1) * GAP + 2 * PADDING
+const CANVAS_H = 2 * PANEL_H + 2 * LABEL_H + GAP + 2 * PADDING
 
 // ---------------------------------------------------------------------------
 // State
@@ -198,12 +199,15 @@ async function setupScene(washTex: Texture) {
   // Layout helpers
   // -------------------------------------------------------------------------
 
-  const startY   = PADDING
-  const panelY   = startY
-  const labelY   = panelY + PANEL_H + 6
+  const LABEL_DY = PANEL_H + 6            // label y within a panel container
+  const ROW_H    = PANEL_H + LABEL_H + GAP
 
+  // 3-column grid: idx 0..2 on row 0, idx 3..4 on row 1.
   function panelX(idx: number): number {
-    return PADDING + idx * (PANEL_W + GAP)
+    return PADDING + (idx % COLS) * (PANEL_W + GAP)
+  }
+  function panelYFor(idx: number): number {
+    return PADDING + Math.floor(idx / COLS) * ROW_H
   }
 
   function addHnQuad(
@@ -225,57 +229,57 @@ async function setupScene(washTex: Texture) {
   // -------------------------------------------------------------------------
 
   const p1 = markRaw(new Container())
-  p1.position.set(panelX(0), panelY)
+  p1.position.set(panelX(0), panelYFor(0))
   stage.addChild(p1)
 
   const tileScale  = PANEL_W / washTex.width
   const rawSprite  = markRaw(new TilingSprite({ texture: washTex, width: PANEL_W, height: PANEL_H }))
   rawSprite.tileScale.set(tileScale)
   p1.addChild(rawSprite)
-  addLabel(p1, 'Raw wash (no filter)', labelY - panelY)
+  addLabel(p1, 'Raw wash (no filter)', LABEL_DY)
 
   // -------------------------------------------------------------------------
   // Panel 2: H–N @ 1× — primary; target of window.__hnTune
   // -------------------------------------------------------------------------
 
   const p2 = markRaw(new Container())
-  p2.position.set(panelX(1), panelY)
+  p2.position.set(panelX(1), panelYFor(1))
   stage.addChild(p2)
 
   primaryHnFilter = makeHnFilter(filterBase, 1, 0, washTex)
   addHnQuad(p2, PANEL_W, PANEL_H, primaryHnFilter)
-  addLabel(p2, 'H–N @ 1× (scale 1, seed 0)', labelY - panelY)
+  addLabel(p2, 'H–N @ 1× (scale 1, seed 0)', LABEL_DY)
 
   // -------------------------------------------------------------------------
   // Panel 3: H–N @ 8× zoom — scale=0.125 magnifies the material
   // -------------------------------------------------------------------------
 
   const p3 = markRaw(new Container())
-  p3.position.set(panelX(2), panelY)
+  p3.position.set(panelX(2), panelYFor(2))
   stage.addChild(p3)
 
   const zoomFilter = makeHnFilter(filterBase, 0.125, 0, washTex)
   addHnQuad(p3, PANEL_W, PANEL_H, zoomFilter)
-  addLabel(p3, 'H–N @ 8× zoom (scale 0.125)', labelY - panelY)
+  addLabel(p3, 'H–N @ 8× zoom (scale 0.125)', LABEL_DY)
 
   // -------------------------------------------------------------------------
   // Panel 4: H–N tiled — scale=4 packs ~4 wash tile-lengths; checks seams
   // -------------------------------------------------------------------------
 
   const p4 = markRaw(new Container())
-  p4.position.set(panelX(3), panelY)
+  p4.position.set(panelX(3), panelYFor(3))
   stage.addChild(p4)
 
   const tiledFilter = makeHnFilter(filterBase, 4, 0, washTex)
   addHnQuad(p4, PANEL_W, PANEL_H, tiledFilter)
-  addLabel(p4, 'H–N tiled ~4× (scale 4)', labelY - panelY)
+  addLabel(p4, 'H–N tiled ~4× (scale 4)', LABEL_DY)
 
   // -------------------------------------------------------------------------
   // Panel 5: 4 seeds — 2×2 grid of sub-quads, seed 0..3
   // -------------------------------------------------------------------------
 
   const p5 = markRaw(new Container())
-  p5.position.set(panelX(4), panelY)
+  p5.position.set(panelX(4), panelYFor(4))
   stage.addChild(p5)
 
   for (let s = 0; s < 4; s++) {
@@ -295,7 +299,7 @@ async function setupScene(washTex: Texture) {
     seedLbl.position.set(2, SEED_SIZE - 14)
     wrap.addChild(seedLbl)
   }
-  addLabel(p5, '4 seeds (seed 0–3)', labelY - panelY)
+  addLabel(p5, '4 seeds (seed 0–3)', LABEL_DY)
 
   // -------------------------------------------------------------------------
   // window.__hnTune — update primary H–N filter (panel 2)
